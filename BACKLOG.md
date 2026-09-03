@@ -4,34 +4,6 @@ Work that is not done. Each item says why it matters and what it would take;
 the reasoning behind decisions *already taken* is in [DESIGN.md](DESIGN.md),
 including the things that were considered and rejected.
 
-## Blocking a release
-
-Nothing, as of v0.1.0.
-
-The rule engine is covered now: 46 tests, 25 of them in `config.rs`, reached
-without a compositor because a `Selection` goes in and a `Rewrite` comes out.
-Rule order and first-match-wins, a handler that declines, throws, or returns
-something unusable, `when = "plain-only"`, the escaping in `clipmunge.link`,
-and the load-time failures — bad pattern, unknown `when`, missing handler.
-
-Three of them are named after bugs this project actually had, and each was
-checked by putting the bug back:
-
-| test | mutation | what it did |
-| ------------------------------------------------- | ------------------------------- | -------------------------------------- |
-| `require_cannot_resurrect_io_or_os`                | `Lua::new()` for `new_with`     | failed: "io escaped the sandbox"       |
-| `the_advertised_order_is_canonical_not_lua_table_order` | drop `canonical_order()`   | failed, showing the hash order         |
-| `a_runaway_handler_is_skipped_rather_than_hanging` | `MAX_TICKS = u64::MAX`          | hung; libtest reported it past 60s     |
-
-A regression test that has never been seen to fail is a comment with a test
-harness around it, so this is worth repeating for the next one.
-
-`clipmunge install` was on this list and is not any more. It was written before
-the flake and the Makefile existed, when nothing shipped the man pages. Both do
-now, so the uncovered audience is one path — `cargo install --git`, which has
-no checkout — and the README names the two that work. Still worth having, no
-longer a blocker; see below.
-
 ## Installing more than the binary
 
 `cargo install` has no mechanism for man pages, units or example configs: the
@@ -66,6 +38,10 @@ Two things it has to get right:
 - **Never write `config.lua`.** Only the example. If a config already exists,
   say nothing; if it does not, print the one line that copies it. The daemon
   already refuses to start without one, so the hint lands at the right moment.
+
+No longer a release blocker: it was one when nothing but the binary shipped,
+and the flake and the Makefile both install the man pages now, so the
+uncovered audience is the single `cargo install --git` path.
 
 Note this is not the `Makefile`'s job and does not replace it. The two serve
 different people: `make install PREFIX=/usr DESTDIR=$pkgdir` is what an AUR or
@@ -105,6 +81,45 @@ a reputation.
   to do - unlinking something, releasing a lock.
 
 ## Lua API gaps
+
+### A handler cannot see the incoming selection
+
+The largest open question here, and half-built already. A handler receives the
+capture groups of `match`, which is a regex over the plain text, and nothing
+else. It cannot look at the `text/html` that arrived, or at the MIME list, or
+at anything the rule did not itself capture.
+
+That rules out a whole class of rule nobody can write today: fix the href
+inside HTML somebody copied out of a page, rewrite text and markup together so
+they agree, decide based on which flavours are present rather than on what the
+text looks like.
+
+The read path is already done. `worth_reading` deliberately covers
+`RICH_MIMES` and not just the text family, so `text/html`, the source URL,
+`text/uri-list` and `text/rtf` are fetched and sitting in the `Selection` by
+the time a rule runs — see the comment at `clipboard.rs:50`. Only the handler
+API has to change.
+
+Two shapes, and they are not equivalent:
+
+- **A second argument.** `handler = function(caps..., incoming)`. Breaks every
+  handler declared with a fixed arity that a caller now passes one more
+  argument to — which in Lua is silently harmless, so it breaks nothing
+  loudly, which is worse. It also puts the incoming selection after a variable
+  number of capture groups, so a rule has to count.
+- **`clipmunge.incoming` as a table**, valid for the duration of the call.
+  Additive: existing rules never mention it and are unaffected. Costs a table
+  built per rewrite, and it is ambient rather than passed, which reads worse
+  but is the only one that does not touch the existing shape.
+
+The second is probably right for the same reason `flavour_order` should be a
+setting rather than a change to what a handler returns: the shape every
+published rule set is written against is the expensive thing to move.
+
+Wait for a rule that actually wants it. But do not let the read-path work go
+unrecorded in the meantime, which is what this entry is for.
+
+### Smaller
 
 - `clipmunge.url.parse` / `build`. Not obviously worth a real URL parser as a
   dependency: `strip_params` needed only the text between `?` and `#`, and

@@ -107,6 +107,10 @@ trim was once recorded here as making the binary *larger*.
   to `$HOME/.config`; taking it naively makes `XDG_CONFIG_HOME=""` a path
   relative to `WorkingDirectory`, which under systemd is not where anyone put
   their config.
+- **A regression test is not believed until it has been seen to fail.** Put
+  the bug back, watch it go red, put it back. Two minutes, and it is the only
+  thing separating a regression test from a comment with a harness around it.
+  The three in `config.rs` were each checked this way; see DESIGN.md.
 - **Every wayland object we are handed gets destroyed.** wayland-rs does not
   send destructors on drop, and `ext-data-control-v1` says the client *must*
   destroy the offer it replaces. Forgetting one leaks a compositor resource

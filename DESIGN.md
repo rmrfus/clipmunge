@@ -86,6 +86,29 @@ What images break that text does not:
   96 KB on the same frame. Lossy WebP needs libwebp over FFI and gives up the
   pure-Rust build.
 
+## Proving a regression test actually catches its bug
+
+46 tests, 25 of them in `config.rs`. The rule engine is reachable without a
+compositor - a `Selection` goes in, a `Rewrite` comes out - which is why
+`Engine::load` is split into "read the file" and `build` from a source string.
+
+Three tests are named after bugs this project actually had, and none of them
+was believed until the bug was put back and the test was watched to fail:
+
+| test | mutation | what it did |
+| ------------------------------------------------- | ------------------------------- | -------------------------------------- |
+| `require_cannot_resurrect_io_or_os`                | `Lua::new()` for `new_with`     | failed: "io escaped the sandbox"       |
+| `the_advertised_order_is_canonical_not_lua_table_order` | drop `canonical_order()`   | failed, showing the hash order         |
+| `a_runaway_handler_is_skipped_rather_than_hanging` | `MAX_TICKS = u64::MAX`          | hung; libtest reported it past 60s     |
+
+A regression test that has never been seen to fail is a comment with a test
+harness around it. The mutation costs two minutes and is the only thing that
+distinguishes the two.
+
+The same discipline applies outside the test suite: `checks.example-config`
+was verified by putting an unbalanced group into `config.lua.example`, and
+`undocumented_unsafe_blocks` by deleting a `// SAFETY:` line.
+
 ## What the secret hint does not cover
 
 `secret_mimes` skips a selection whose owner advertises
