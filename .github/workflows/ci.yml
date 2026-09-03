@@ -67,14 +67,15 @@ jobs:
 
   msrv:
     # rust-version is otherwise a claim nothing checks: nix gives whatever
-    # nixpkgs pins (1.95 today) and a floor of 1.85 would stay green for months
-    # before breaking the first stranger running `cargo install --locked`.
+    # nixpkgs pins (1.95 today), so the declared floor stays green locally
+    # whatever it says. The first run of this job caught exactly that - the
+    # manifest claimed 1.85 while mlua-sys wants 1.88.
     name: rust-version floor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@85c23e28f7ccc75a9a153d45d385d94a85464876 # 1.85
+      - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Check, not build: this proves the floor compiles, and the release

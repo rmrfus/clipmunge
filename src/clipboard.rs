@@ -508,10 +508,10 @@ impl Dispatch<ExtDataControlOfferV1, ()> for State {
         let id = offer.id().protocol_id();
         if let Some((_, mimes)) = state.pending.get_mut(&id) {
             mimes.push(mime_type);
-        } else if let Some((current, mimes)) = &mut state.current {
-            if current.id().protocol_id() == id {
-                mimes.push(mime_type);
-            }
+        } else if let Some((current, mimes)) = &mut state.current
+            && current.id().protocol_id() == id
+        {
+            mimes.push(mime_type);
         }
     }
 }

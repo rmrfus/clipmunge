@@ -2,9 +2,15 @@
 name = "clipmunge"
 version = "0.1.0"
 edition = "2024"
-# The floor is edition 2024, which landed in 1.85; nothing here needs a
-# newer language feature.
-rust-version = "1.85"
+# mlua-sys 0.12 refuses to build below 1.88, and `cargo install --locked`
+# resolves the whole graph, so this is the real floor. Claiming 1.85 was a lie
+# that only surfaced once CI started checking it: the local toolchain is 1.95,
+# so every build here was green regardless.
+#
+# It is now our own floor as well. clippy gates its suggestions on this key,
+# and raising it turned on the let-chain in clipboard.rs that it had been
+# holding back - so lowering the number again would not compile.
+rust-version = "1.88"
 description = "Rule-driven Wayland clipboard rewriter that can put different content in different MIME types"
 license = "MIT"
 repository = "https://github.com/rmrfus/clipmunge"

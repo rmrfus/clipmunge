@@ -70,6 +70,9 @@ at most one per rewrite. `--no-notify` switches the whole mechanism off.
 
 ### Requirements
 
+Rust 1.88 or newer to build from source. That floor arrives with mlua, and
+clipmunge now uses a let-chain of its own, so it is real on both counts.
+
 A compositor that implements **`ext-data-control-v1`** — sway 1.11 or newer,
 or equivalently recent wlroots. clipmunge does not fall back to the older
 `wlr-data-control`, and will not: the whole design leans on the standard
