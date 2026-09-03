@@ -135,17 +135,27 @@ impl Engine {
             .with_context(|| format!("resolving {}", path.display()))?;
         let source = std::fs::read_to_string(&resolved)
             .with_context(|| format!("reading {}", resolved.display()))?;
+        Self::build(&source, path, &resolved)
+    }
 
+    /// Everything `load` does once the bytes are in hand.
+    ///
+    /// Split out so the rule engine can be tested without a file: the two
+    /// paths differ only in where the source came from, and the parts worth
+    /// testing - the sandbox, rule order, what a handler may return - do not
+    /// touch the filesystem at all. `given` and `resolved` still matter here
+    /// because they become `package.path`.
+    fn build(source: &str, given: &Path, resolved: &Path) -> Result<Self> {
         let lua = Lua::new_with(rule_stdlib(), LuaOptions::default()).lua()?;
         let ticks = Rc::new(Cell::new(0u64));
         install_limits(&lua, &ticks).lua()?;
 
         let collected = lua.create_table().lua()?;
         let settings_tbl = lua.create_table().lua()?;
-        install_api(&lua, &collected, &settings_tbl, path, &resolved).lua()?;
+        install_api(&lua, &collected, &settings_tbl, given, resolved).lua()?;
 
         ticks.set(0);
-        lua.load(&source)
+        lua.load(source)
             .set_name(resolved.to_string_lossy().as_ref())
             .exec()
             .map_err(|e| anyhow!("evaluating {}: {e}", resolved.display()))?;
@@ -164,7 +174,7 @@ impl Engine {
             lua,
             ticks,
             rules,
-            path: path.to_path_buf(),
+            path: given.to_path_buf(),
             settings,
             notify_enabled: true,
         })
@@ -574,4 +584,357 @@ fn html_escape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::selection::{MARKER_MIME, TEXT_MIMES};
+
+    /// The rule engine needs no file and no compositor: a source string goes
+    /// in, a `Selection` goes past it, a `Rewrite` comes out.
+    fn engine(source: &str) -> Result<Engine> {
+        // A directory that does not exist is fine and is the point: nothing
+        // here should reach the filesystem, so a `require` would fail loudly
+        // rather than picking up whatever happens to sit next to the tests.
+        let path = Path::new("/nonexistent/clipmunge/config.lua");
+        Engine::build(source, path, path)
+    }
+
+    /// `Result::expect_err` wants `T: Debug`, and `Engine` has no business
+    /// growing one for a test - it holds a Lua state and the rule set. Drop
+    /// the Ok side first instead.
+    fn load_err(source: &str) -> anyhow::Error {
+        engine(source)
+            .err()
+            .expect("this config was supposed to fail to load")
+    }
+
+    fn plain(text: &str) -> Selection {
+        let mut sel = Selection::new();
+        sel.set_text(text);
+        sel
+    }
+
+    fn text_of(r: &Rewrite) -> String {
+        String::from_utf8_lossy(r.selection.get("text/plain").unwrap_or_default()).into_owned()
+    }
+
+    const ECHO: &str = r#"
+        clipmunge.rule {
+          name = "echo",
+          match = [[^(.+)$]],
+          handler = function(all) return "seen:" .. all end,
+        }
+    "#;
+
+    #[test]
+    fn a_matching_rule_replaces_the_text() {
+        let mut e = engine(ECHO).expect("config should load");
+        let out = e.rewrite(&plain("hello")).expect("echo should match");
+        assert_eq!(text_of(&out), "seen:hello");
+    }
+
+    #[test]
+    fn no_rule_matching_leaves_the_clipboard_alone() {
+        let mut e = engine(
+            r#"clipmunge.rule { name = "digits", match = [[^\d+$]],
+                                handler = function() return "x" end }"#,
+        )
+        .expect("config should load");
+        assert!(e.rewrite(&plain("not a number")).is_none());
+    }
+
+    #[test]
+    fn the_first_matching_rule_wins_in_declaration_order() {
+        let mut e = engine(
+            r#"
+            clipmunge.rule { name = "first",  match = [[^x$]],
+                             handler = function() return "one" end }
+            clipmunge.rule { name = "second", match = [[^x$]],
+                             handler = function() return "two" end }
+            "#,
+        )
+        .expect("config should load");
+        let out = e.rewrite(&plain("x")).expect("something should match");
+        assert_eq!(text_of(&out), "one");
+    }
+
+    #[test]
+    fn a_handler_returning_nil_declines_and_the_next_rule_is_tried() {
+        let mut e = engine(
+            r#"
+            clipmunge.rule { name = "abstains", match = [[^x$]],
+                             handler = function() return nil end }
+            clipmunge.rule { name = "answers",  match = [[^x$]],
+                             handler = function() return "second" end }
+            "#,
+        )
+        .expect("config should load");
+        let out = e
+            .rewrite(&plain("x"))
+            .expect("the second rule should answer");
+        assert_eq!(text_of(&out), "second");
+    }
+
+    #[test]
+    fn a_handler_that_throws_is_skipped_not_fatal() {
+        let mut e = engine(
+            r#"
+            clipmunge.rule { name = "explodes", match = [[^x$]],
+                             handler = function() error("boom") end }
+            clipmunge.rule { name = "survives", match = [[^x$]],
+                             handler = function() return "still here" end }
+            "#,
+        )
+        .expect("config should load");
+        let out = e
+            .rewrite(&plain("x"))
+            .expect("the second rule should answer");
+        assert_eq!(text_of(&out), "still here");
+    }
+
+    #[test]
+    fn a_handler_returning_something_unusable_is_skipped() {
+        let mut e = engine(
+            r#"
+            clipmunge.rule { name = "returns-a-number", match = [[^x$]],
+                             handler = function() return 42 end }
+            clipmunge.rule { name = "returns-a-string", match = [[^x$]],
+                             handler = function() return "ok" end }
+            "#,
+        )
+        .expect("config should load");
+        let out = e
+            .rewrite(&plain("x"))
+            .expect("the second rule should answer");
+        assert_eq!(text_of(&out), "ok");
+    }
+
+    #[test]
+    fn a_table_of_only_notify_is_rejected() {
+        // Nothing would reach the clipboard, so the rule has not done its job.
+        let mut e = engine(
+            r#"clipmunge.rule { name = "chatty", match = [[^x$]],
+                                handler = function() return { notify = "hi" } end }"#,
+        )
+        .expect("config should load");
+        assert!(e.rewrite(&plain("x")).is_none());
+    }
+
+    #[test]
+    fn capture_groups_arrive_as_arguments_and_a_missing_group_is_nil() {
+        let mut e = engine(
+            r#"clipmunge.rule {
+                 name = "groups",
+                 match = [[^(a)(b)?(c)$]],
+                 handler = function(one, two, three)
+                   return one .. "/" .. tostring(two) .. "/" .. three
+                 end,
+               }"#,
+        )
+        .expect("config should load");
+        let out = e.rewrite(&plain("ac")).expect("should match");
+        assert_eq!(text_of(&out), "a/nil/c");
+    }
+
+    #[test]
+    fn plain_only_skips_a_rule_when_a_rich_flavour_is_present() {
+        let src = r#"clipmunge.rule { name = "linkify", match = [[^x$]], when = "plain-only",
+                                      handler = function() return "linked" end }"#;
+        let mut e = engine(src).expect("config should load");
+        assert!(e.rewrite(&plain("x")).is_some(), "bare text should match");
+
+        let mut rich = plain("x");
+        rich.set(HTML_MIME, b"<b>x</b>".to_vec());
+        assert!(
+            e.rewrite(&rich).is_none(),
+            "a selection that already carries text/html is not ours to guess at"
+        );
+    }
+
+    #[test]
+    fn an_unknown_when_value_fails_the_load() {
+        let err = load_err(
+            r#"clipmunge.rule { name = "typo", match = [[^x$]], when = "plainonly",
+                                handler = function() return "x" end }"#,
+        );
+        assert!(err.to_string().contains("plainonly"), "{err:#}");
+    }
+
+    #[test]
+    fn a_bad_pattern_fails_at_load_rather_than_on_some_later_copy() {
+        let err = load_err(
+            r#"clipmunge.rule { name = "unbalanced", match = [[^(x$]],
+                                handler = function() return "x" end }"#,
+        );
+        assert!(err.to_string().contains("unbalanced"), "{err:#}");
+    }
+
+    #[test]
+    fn link_escapes_both_the_href_and_the_text() {
+        let mut e = engine(
+            r#"clipmunge.rule {
+                 name = "link",
+                 match = [[^(.+)$]],
+                 handler = function(s) return clipmunge.link("https://e.com/?a=1&b=2", s) end,
+               }"#,
+        )
+        .expect("config should load");
+        let out = e.rewrite(&plain("<script>&\"")).expect("should match");
+        let html =
+            String::from_utf8_lossy(out.selection.get(HTML_MIME).expect("link sets text/html"))
+                .into_owned();
+        assert_eq!(
+            html,
+            "<a href=\"https://e.com/?a=1&amp;b=2\">&lt;script&gt;&amp;&quot;</a>"
+        );
+        // The plain flavour is the text as given, unescaped - it is not markup.
+        assert_eq!(text_of(&out), "<script>&\"");
+    }
+
+    /// Regression. `require("os")` used to hand back the real library despite
+    /// `os` being nil in _G, because luaL_openlibs also files every library
+    /// under package.loaded and require looks there first. A rule set could
+    /// then run `os.execute`, which the README said was impossible.
+    #[test]
+    fn require_cannot_resurrect_io_or_os() {
+        for lib in ["io", "os", "debug"] {
+            let src = format!(
+                r#"local ok, m = pcall(require, "{lib}")
+                   if ok and type(m) == "table" then error("{lib} is reachable") end
+                   clipmunge.rule {{ name = "n", match = [[^x$]],
+                                     handler = function() return "x" end }}"#
+            );
+            engine(&src).unwrap_or_else(|e| panic!("{lib} escaped the sandbox: {e:#}"));
+        }
+    }
+
+    /// Regression. A handler returns a Lua table and Lua seeds its string hash
+    /// per process, so `pairs` order changed between daemon starts - six
+    /// starts gave five different advertised orders, and a client that takes
+    /// the first flavour it recognises pasted differently after a restart.
+    #[test]
+    fn the_advertised_order_is_canonical_not_lua_table_order() {
+        let mut e = engine(
+            r#"clipmunge.rule {
+                 name = "link",
+                 match = [[^(.+)$]],
+                 handler = function(s) return clipmunge.link("https://e.com/", s) end,
+               }"#,
+        )
+        .expect("config should load");
+        let out = e.rewrite(&plain("x")).expect("should match");
+        let mimes: Vec<&str> = out.selection.mimes().collect();
+
+        let mut want: Vec<&str> = TEXT_MIMES.to_vec();
+        want.push(HTML_MIME);
+        want.push(URL_MIME);
+        assert_eq!(mimes, want);
+        assert!(
+            !mimes.contains(&MARKER_MIME),
+            "the marker is added on publish"
+        );
+    }
+
+    /// Regression. Without an instruction budget a `while true do end` in a
+    /// handler parked the daemon for ever; `--check` on such a config had to
+    /// be killed by timeout.
+    #[test]
+    fn a_runaway_handler_is_skipped_rather_than_hanging() {
+        let mut e = engine(
+            r#"
+            clipmunge.rule { name = "spins",  match = [[^x$]],
+                             handler = function() while true do end end }
+            clipmunge.rule { name = "normal", match = [[^x$]],
+                             handler = function() return "after the spin" end }
+            "#,
+        )
+        .expect("config should load");
+        let started = std::time::Instant::now();
+        let out = e
+            .rewrite(&plain("x"))
+            .expect("the second rule should answer");
+        assert_eq!(text_of(&out), "after the spin");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "took {:?}, which means the budget did not fire",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_runaway_at_load_time_fails_the_load() {
+        load_err("while true do end");
+    }
+
+    #[test]
+    fn each_rule_gets_the_whole_budget_rather_than_sharing_one() {
+        // Two rules that each burn most of the budget. If the counter were not
+        // reset per call the second would be killed by the first one's spend.
+        let mut e = engine(
+            r#"
+            local function burn()
+              local acc = 0
+              for i = 1, 300000 do acc = acc + i end
+              return acc
+            end
+            clipmunge.rule { name = "burn1", match = [[^x$]],
+                             handler = function() burn() return nil end }
+            clipmunge.rule { name = "burn2", match = [[^x$]],
+                             handler = function() return "burnt " .. burn() end }
+            "#,
+        )
+        .expect("config should load");
+        let out = e
+            .rewrite(&plain("x"))
+            .expect("the second rule should answer");
+        assert!(text_of(&out).starts_with("burnt "), "{}", text_of(&out));
+    }
+
+    #[test]
+    fn an_empty_or_whitespace_selection_is_left_alone() {
+        let mut e = engine(ECHO).expect("config should load");
+        assert!(e.rewrite(&plain("")).is_none());
+        assert!(e.rewrite(&plain("   \n ")).is_none());
+        assert!(e.rewrite(&Selection::new()).is_none());
+    }
+
+    #[test]
+    fn a_notify_field_rides_along_with_the_rewrite() {
+        let mut e = engine(
+            r#"clipmunge.rule {
+                 name = "tells",
+                 match = [[^x$]],
+                 handler = function() return { text = "y", notify = "did a thing" } end,
+               }"#,
+        )
+        .expect("config should load");
+        let out = e.rewrite(&plain("x")).expect("should match");
+        assert_eq!(out.notify.as_deref(), Some("did a thing"));
+        assert_eq!(text_of(&out), "y");
+    }
+
+    #[test]
+    fn an_unknown_settings_key_is_a_warning_and_not_a_failure() {
+        // Loud in the log, but a typo'd setting must not take the rules down.
+        let e = engine(
+            r#"clipmunge.settings { notifi_command = { "true" } }
+               clipmunge.rule { name = "n", match = [[^x$]],
+                                handler = function() return "x" end }"#,
+        )
+        .expect("an unknown key warns rather than failing");
+        assert_eq!(e.rule_names(), vec!["n"]);
+    }
+
+    #[test]
+    fn an_empty_notify_command_fails_the_load() {
+        load_err(r#"clipmunge.settings { notify_command = {} }"#);
+    }
+
+    #[test]
+    fn a_rule_without_a_handler_or_a_match_fails_the_load() {
+        load_err(r#"clipmunge.rule { name = "no-match", handler = function() return "x" end }"#);
+        load_err(r#"clipmunge.rule { name = "no-handler", match = [[^x$]] }"#);
+    }
 }

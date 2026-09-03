@@ -213,7 +213,8 @@ every dependency that was weighed, which is how the next one gets argued about.
 
 ## Status
 
-Early. Text and HTML only; the read path is bytes-and-MIME throughout, so
+Early, but tested: 43 tests, and the rule engine's three worst bugs each have
+one named after it. Text and HTML only; the read path is bytes-and-MIME throughout, so
 images are a matter of adding rules rather than rewriting the core, but that
 work has not happened. See [BACKLOG.md](BACKLOG.md), which also records the
 things that were considered and rejected, and why.

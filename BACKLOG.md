@@ -5,18 +5,31 @@ here was considered and consciously postponed, not forgotten.
 
 ## Blocking a release
 
-| item                | why it matters                                                            |
-| ------------------- | ------------------------------------------------------------------------- |
-| test coverage       | 21 tests, in `urlclean`, the write path and sd_notify; the rule engine has none yet |
-| `clipmunge install` | see below; man pages and the unit reach nobody without it                  |
+Nothing, as of v0.1.0.
 
-The rule engine is the part still untested, and it is testable without a
-compositor: a `Selection` goes in, a `Rewrite` comes out. Worth covering
-`when = "plain-only"`, rule order and first-match-wins, a handler that throws,
-a handler returning something unusable, the escaping in `clipmunge.link`, and
-— since all three were live bugs — that `require("os")` fails, that
-`canonical_order` is stable, and that a handler which overruns its budget is
-skipped rather than fatal.
+The rule engine is covered now: 43 tests, 22 of them in `config.rs`, reached
+without a compositor because a `Selection` goes in and a `Rewrite` comes out.
+Rule order and first-match-wins, a handler that declines, throws, or returns
+something unusable, `when = "plain-only"`, the escaping in `clipmunge.link`,
+and the load-time failures — bad pattern, unknown `when`, missing handler.
+
+Three of them are named after bugs this project actually had, and each was
+checked by putting the bug back:
+
+| test | mutation | what it did |
+| ------------------------------------------------- | ------------------------------- | -------------------------------------- |
+| `require_cannot_resurrect_io_or_os`                | `Lua::new()` for `new_with`     | failed: "io escaped the sandbox"       |
+| `the_advertised_order_is_canonical_not_lua_table_order` | drop `canonical_order()`   | failed, showing the hash order         |
+| `a_runaway_handler_is_skipped_rather_than_hanging` | `MAX_TICKS = u64::MAX`          | hung; libtest reported it past 60s     |
+
+A regression test that has never been seen to fail is a comment with a test
+harness around it, so this is worth repeating for the next one.
+
+`clipmunge install` was on this list and is not any more. It was written before
+the flake and the Makefile existed, when nothing shipped the man pages. Both do
+now, so the uncovered audience is one path — `cargo install --git`, which has
+no checkout — and the README names the two that work. Still worth having, no
+longer a blocker; see below.
 
 ## Installing more than the binary
 
