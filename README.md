@@ -162,9 +162,16 @@ make install DESTDIR="$pkgdir" PREFIX=/usr # for a distribution package
 ```
 
 This is the path that installs everything: the binary, both man pages, the
-example config under `share/doc/clipmunge`, and the systemd user unit. The
-shipped unit says `ExecStart=%h/.local/bin/clipmunge`, so edit it to wherever
-`PREFIX` actually put the binary — `make install` says so on the way out.
+example config under `share/doc/clipmunge`, and the systemd user unit with its
+`ExecStart` already rewritten to wherever `PREFIX` put the binary. `make show
+PREFIX=…` prints every destination without installing anything.
+
+The unit does not go to `$(PREFIX)/lib/systemd/user`, which would be wrong for
+a home prefix: systemd looks for units installed into a home directory in
+`~/.local/share/systemd/user` and has no `~/.local/lib/systemd/user` on its
+search path at all (`systemd.unit(5)`, Table 2). A system prefix does get
+`lib`, because `/usr/share/systemd/user` is only searched through
+`XDG_DATA_DIRS`, which anybody may repoint.
 
 ### cargo install
 

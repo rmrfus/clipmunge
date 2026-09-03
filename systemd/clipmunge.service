@@ -36,7 +36,9 @@ TimeoutStartSec=30
 ; PATH; a distribution package puts it in /usr/bin. Pick one. The nix package
 ; rewrites this line to its own store path and ships the result inside the
 ; package, so on NixOS take that unit (systemd.packages) rather than this
-; file.
+; file. `make install` rewrites it too, to $(BINDIR)/clipmunge. This file is
+; the template; both installers substitute, and nobody should have to edit it
+; by hand.
 ExecStart=%h/.local/bin/clipmunge
 
 ; A missing or broken config is a mistake to fix, not something to retry
