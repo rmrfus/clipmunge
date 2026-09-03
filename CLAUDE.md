@@ -73,6 +73,11 @@ trim was once recorded here as making the binary *larger*.
   Lua seeds its string hash per process, so `pairs` order changes between
   runs, and clients that take the first flavour they recognise then paste
   something different after a restart.
+- **The secret guard runs on the announced MIME list, before any read.** Not
+  in Lua, and not as a `when` value on a rule: a handler is reached only after
+  the text has been pulled out of the pipe, at which point `--debug` has
+  already put it in the journal. The list is configurable, the decision is
+  not. Its log line says nothing about the content, on purpose.
 - **`application/x-clipmunge` is the loop guard**, checked against the
   *advertised* MIME list before anything is read — not after.
 - **Nothing blocks inside an event dispatch.** The pipe a pasting client hands

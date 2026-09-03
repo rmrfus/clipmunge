@@ -28,7 +28,7 @@ use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, Variad
 use regex::Regex;
 
 use crate::clipboard::{Rewrite, Rewriter};
-use crate::selection::{HTML_MIME, Selection, URL_MIME};
+use crate::selection::{HTML_MIME, SECRET_MIMES, Selection, URL_MIME};
 use crate::urlclean::{DEFAULT_JUNK, strip_params};
 
 /// The hook fires this often; `MAX_TICKS` of them ends the call. Together they
@@ -82,6 +82,13 @@ pub struct Settings {
     /// template pasted through a shell would be a command injection with the
     /// clipboard as its input, which is about the worst possible source.
     pub notify_command: Vec<String>,
+
+    /// Advertised flavours that make the daemon leave a selection entirely
+    /// alone - not rewritten, not read, and so not logged even under
+    /// `--debug`. Replaced rather than extended by the config, the way
+    /// `clipmunge.url.default_junk` is; an empty list is a deliberate "respect
+    /// nothing" and is allowed.
+    pub secret_mimes: Vec<String>,
 }
 
 impl Default for Settings {
@@ -91,6 +98,7 @@ impl Default for Settings {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            secret_mimes: SECRET_MIMES.iter().map(|s| s.to_string()).collect(),
         }
     }
 }
@@ -251,6 +259,12 @@ impl Rewriter for Engine {
         None
     }
 
+    fn is_secret(&self, mimes: &[String]) -> bool {
+        mimes
+            .iter()
+            .any(|m| self.settings.secret_mimes.iter().any(|s| s == m))
+    }
+
     fn notify(&self, text: &str) {
         if !self.notify_enabled {
             return;
@@ -326,7 +340,7 @@ fn install_limits(lua: &Lua, ticks: &Rc<Cell<u64>>) -> mlua::Result<()> {
 /// Everything `clipmunge.settings` understands. An unknown key is almost
 /// always a typo, and silently ignoring it is how a config ends up not doing
 /// what it plainly says.
-const SETTING_KEYS: &[&str] = &["notify_command"];
+const SETTING_KEYS: &[&str] = &["notify_command", "secret_mimes"];
 
 fn read_settings(tbl: &Table) -> Result<Settings> {
     let mut settings = Settings::default();
@@ -351,6 +365,12 @@ fn read_settings(tbl: &Table) -> Result<Settings> {
             bail!("notify_command must not be empty");
         }
         settings.notify_command = cmd;
+    }
+    // No emptiness check, unlike notify_command: `secret_mimes = {}` is a
+    // config saying "honour no such hint", which is a position a person may
+    // hold, and it is visible in the file where somebody can argue with it.
+    if let Some(mimes) = tbl.get::<Option<Vec<String>>>("secret_mimes").lua()? {
+        settings.secret_mimes = mimes;
     }
     Ok(settings)
 }
@@ -913,6 +933,60 @@ mod tests {
         let out = e.rewrite(&plain("x")).expect("should match");
         assert_eq!(out.notify.as_deref(), Some("did a thing"));
         assert_eq!(text_of(&out), "y");
+    }
+
+    fn mimes(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn the_default_secret_hint_is_honoured() {
+        let e = engine(ECHO).expect("config should load");
+        // The list Firefox actually advertises from about:logins.
+        assert!(e.is_secret(&mimes(&[
+            "text/plain;charset=utf-8",
+            "UTF8_STRING",
+            "text/plain",
+            "x-kde-passwordManagerHint",
+        ])));
+        // ...and the one it advertises for an ordinary copy, hint absent.
+        assert!(!e.is_secret(&mimes(&[
+            "text/plain;charset=utf-8",
+            "UTF8_STRING",
+            "COMPOUND_TEXT",
+            "TEXT",
+            "text/plain",
+            "STRING",
+            "SAVE_TARGETS",
+        ])));
+    }
+
+    #[test]
+    fn secret_mimes_replaces_the_default_rather_than_extending_it() {
+        let e = engine(
+            r#"clipmunge.settings { secret_mimes = { "x-vault-secret" } }
+               clipmunge.rule { name = "n", match = [[^x$]],
+                                handler = function() return "x" end }"#,
+        )
+        .expect("config should load");
+        assert!(e.is_secret(&mimes(&["text/plain", "x-vault-secret"])));
+        assert!(
+            !e.is_secret(&mimes(&["text/plain", "x-kde-passwordManagerHint"])),
+            "a replaced list means the built-in hint is no longer in it"
+        );
+    }
+
+    #[test]
+    fn an_empty_secret_mimes_honours_nothing_and_is_allowed() {
+        // Unlike notify_command, which must not be empty: "respect no hint" is
+        // a position, and one that is visible in the config file.
+        let e = engine(
+            r#"clipmunge.settings { secret_mimes = {} }
+               clipmunge.rule { name = "n", match = [[^x$]],
+                                handler = function() return "x" end }"#,
+        )
+        .expect("an empty secret_mimes is a decision, not an error");
+        assert!(!e.is_secret(&mimes(&["text/plain", "x-kde-passwordManagerHint"])));
     }
 
     #[test]

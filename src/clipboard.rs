@@ -70,6 +70,17 @@ pub trait Rewriter {
     /// about a result we then dropped would be a lie, and results do get
     /// dropped when the clipboard moves on mid-rule.
     fn notify(&self, _text: &str) {}
+
+    /// Whether an offer advertising these flavours is one to leave alone.
+    ///
+    /// Asked of the *announced* list, because the answer has to arrive before
+    /// anything is read: once the bytes are in the process they are in the
+    /// journal too, for anybody running with `--debug`. That is the whole
+    /// point of the guard, so it cannot be a rule's decision - a handler is
+    /// only reached after the text has already been pulled out of the pipe.
+    fn is_secret(&self, _mimes: &[String]) -> bool {
+        false
+    }
 }
 
 pub struct Clipboard {
@@ -231,6 +242,15 @@ impl Clipboard {
             // flavour costs a full read timeout before it gives up.
             if mimes.iter().any(|m| m == MARKER_MIME) {
                 log::debug!("skipping our own selection");
+                return Ok(());
+            }
+
+            // Same place, same reason: on the announced list, before a byte is
+            // read. Deliberately says nothing about what was on the clipboard,
+            // because the one thing this guard exists to prevent is that
+            // string reaching the log.
+            if rewriter.is_secret(&mimes) {
+                log::info!("selection marked secret by its owner, left alone");
                 return Ok(());
             }
 

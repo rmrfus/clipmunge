@@ -206,6 +206,33 @@ handler cannot start a process, but the file it came in can name one here.
 Nothing is sent unless a rule asks for it, so a config with no
 .B notify
 in any handler is silent regardless of this setting.
+.TP
+.B secret_mimes
+Advertised flavours whose presence makes clipmunge leave a selection alone
+entirely \- not rewritten, not read, and therefore not logged even under
+.BR \-\-debug .
+Default
+.BR "{ \(dqx-kde-passwordManagerHint\(dq }" .
+.IP
+The list replaces the built\-in one rather than extending it, the same way
+.B clipmunge.url.strip_params
+takes a replacement list. An empty table is allowed and means \(lqhonour no
+such hint\(rq; that is a position somebody may hold, and this is where it is
+visible.
+.IP
+Only the flavour's presence is checked, never its value. Fetching a six\-byte
+hint would cost a pipe round trip with a source that may never answer, and a
+source that advertised the hint has already said what it means.
+.IP
+.B This is partial and depends entirely on the other application.
+The hint is opt\-in for whoever owns the selection, and most owners do not opt
+in. Measured on Firefox 154: copying from
+.B about:logins
+sets it; copying out of an
+.B <input type=password>
+does not, and neither does the 1Password browser extension. What actually
+keeps a password out of a rewrite is that no rule matches it \- see LOOPS and
+the note on catch\-all patterns.
 .SH EXAMPLE
 .RS 4
 .EX
@@ -228,6 +255,17 @@ clipmunge.rule {
 }
 .EE
 .RE
+.SH CATCH-ALL PATTERNS
+A pattern such as
+.B ^(.*)$
+matches everything you ever copy, passwords included, and hands it to a
+handler. That is a supported thing to write and occasionally the right one,
+but it is the only way an ordinary rule set can end up rewriting a secret: the
+shipped rules match a URL or a bare identifier and a password is neither.
+.PP
+.B secret_mimes
+above helps when the source marks its content, which is uncommon. It is a
+second line, not the first one.
 .SH LOOPS
 Every selection clipmunge publishes carries a private
 .B application/x-clipmunge

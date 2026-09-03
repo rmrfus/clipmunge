@@ -19,6 +19,12 @@
 -- can name a notify_command, and that runs a program. Read a rule set before
 -- you install it.
 
+-- Selections their owner marks secret are skipped whole - not rewritten, not
+-- read, not logged. Uncomment to change what counts; the list replaces the
+-- default rather than adding to it, and {} means "honour no hint".
+--
+-- clipmunge.settings { secret_mimes = { "x-kde-passwordManagerHint" } }
+
 -- Bare ticket identifiers become links, while the plain text stays the bare
 -- identifier so that shell pastes keep working.
 --

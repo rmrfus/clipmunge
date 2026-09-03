@@ -23,6 +23,21 @@ pub const TEXT_MIMES: &[&str] = &[
 pub const HTML_MIME: &str = "text/html";
 pub const URL_MIME: &str = "chromium/x-source-url";
 
+/// Flavours whose presence means "this is a password, leave it alone".
+///
+/// `x-kde-passwordManagerHint` is klipper's, and the name has outlived its
+/// desktop - Firefox carries the same atom. Its documented value is `secret`,
+/// and we do not read it: fetching a six-byte flavour costs a pipe round trip
+/// with a source that may never answer (Firefox advertises `COMPOUND_TEXT`
+/// and then serves nothing, measured at a four-second timeout), and a source
+/// that bothered to advertise the hint at all has said what it means.
+///
+/// Partial by construction: this is opt-in for whoever owns the selection, and
+/// most of them do not opt in. Measured on Firefox 154 - copying from
+/// about:logins sets it, copying out of an `<input type=password>` does not,
+/// and the 1Password browser extension does not.
+pub const SECRET_MIMES: &[&str] = &["x-kde-passwordManagerHint"];
+
 /// Flavours that mean somebody has already described this selection better
 /// than a guess from its plain text would. Also, with `TEXT_MIMES`, the whole
 /// set the daemon bothers to read: see `Clipboard::read_offer`.

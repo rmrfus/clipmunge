@@ -62,6 +62,24 @@ ten million VM instructions and 64 MB. That is thousands of times what a real
 rule uses, and it means a `while true do end` costs one logged error rather
 than a clipboard that stops working until you notice.
 
+A selection whose owner marks it secret — the `x-kde-passwordManagerHint`
+flavour — is skipped whole: not rewritten, not read, and so not logged even
+under `--debug`. The check is on the announced flavour list, before a byte is
+fetched, because after that the content is already in the process. The list is
+a setting:
+
+```lua
+clipmunge.settings { secret_mimes = { "x-kde-passwordManagerHint" } }
+```
+
+Take this for exactly what it is worth. The hint is opt-in for whoever owns
+the selection and most owners never send it — on Firefox 154, copying from
+`about:logins` sets it, copying out of a password field does not, and the
+1Password browser extension does not. **What actually keeps a password out of
+a rewrite is that no rule matches it.** The shipped rules want a URL or a bare
+identifier; a password is neither. Write `^(.*)$` and you have opted out of
+that protection yourself.
+
 A handler can *describe* a notification by returning a `notify` field; the
 daemon decides whether to send it, truncates it to 200 characters, and sends
 at most one per rewrite. `--no-notify` switches the whole mechanism off.

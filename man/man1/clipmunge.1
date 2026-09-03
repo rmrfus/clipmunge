@@ -128,6 +128,19 @@ Lua heap, thousands of times what a real rule needs. It is a guard against
 your own endless loop, not against an adversary: a rule that overruns is
 logged and skipped, and the clipboard keeps working.
 .PP
+A selection whose owner advertises
+.B x-kde-passwordManagerHint
+is left alone entirely: not rewritten, not read, and so not logged even under
+.BR \-\-debug .
+The check runs on the announced flavour list before a byte is fetched, because
+after that the content is already in the process. The list is configurable \-
+see
+.B secret_mimes
+in
+.BR clipmunge (5)
+\- and it is a courtesy that depends on the other application bothering to
+send the hint, which most do not.
+.PP
 The one thing a rule can send outwards is the text of a notification, and even
 that it only describes; the daemon decides whether to send it, truncates it to
 200 characters, and sends at most one per rewrite. The notify command is a

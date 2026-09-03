@@ -156,6 +156,23 @@ What images break that text does not:
 - `clipmunge.regex(pat)` as a value handlers can use for a second pass. Only
   the `match` field compiles a pattern right now.
 
+## What the secret hint does not cover
+
+`secret_mimes` skips a selection whose owner advertises
+`x-kde-passwordManagerHint`. Worth having and nearly free, but it is a
+courtesy protocol and the measurements are not encouraging — on Firefox 154,
+copying from `about:logins` sets the hint; copying out of an
+`<input type=password>` does not, and neither does the 1Password browser
+extension, which is how most people actually put a password on the clipboard.
+
+Nothing better is available. Guessing at content — "this looks like a
+password" — is not a plan: the false positives are silent and the false
+negatives are the ones that matter. The real property is that a rule only
+fires on a match, and the shipped rules want a URL or a bare identifier.
+
+So the honest statement is the one in the README: this is a second line. Do
+not let it grow into a claim that clipmunge knows what a password is.
+
 ## Domain-blind tracker list
 
 `strip_params` matches parameter names with no idea what host they sit on, so
