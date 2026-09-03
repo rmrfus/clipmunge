@@ -58,6 +58,7 @@
           meta = with pkgs.lib; {
             description = "Rule-driven Wayland clipboard rewriter that can put different content in different MIME types";
             homepage = "https://github.com/rmrfus/clipmunge";
+            changelog = "https://github.com/rmrfus/clipmunge/releases";
             license = licenses.mit;
             mainProgram = "clipmunge";
             platforms = platforms.linux;
@@ -68,6 +69,19 @@
       # `nix flake check` builds these. The package itself is not repeated here;
       # CI runs `nix build` for that.
       checks = forAll (pkgs: {
+        # config.lua.example is Lua that lives in the documentation: the file
+        # the package installs and the README tells people to copy. Nothing
+        # else compiles it, so an API change breaks it silently and the first
+        # person to find out is whoever copied it. `--check` needs no
+        # compositor and no $HOME, so it runs in the sandbox as it stands.
+        example-config =
+          pkgs.runCommand "clipmunge-example-config" { }
+            ''
+              ${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/clipmunge \
+                --check -c ${./config.lua.example}
+              touch $out
+            '';
+
         # mlua compiles Lua 5.4 from C, and `c_char` is signed on x86_64 and
         # unsigned on aarch64, so "it builds here" is not the same statement as
         # "it builds on the other architecture this flake claims to support".

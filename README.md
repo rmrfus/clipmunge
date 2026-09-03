@@ -111,12 +111,6 @@ Check with `sway --version`. At the time of writing:
 On an unsupported compositor clipmunge says so and exits rather than starting
 and quietly doing nothing.
 
-```sh
-cargo install --git https://github.com/rmrfus/clipmunge
-install -Dm644 man/man1/clipmunge.1 ~/.local/share/man/man1/clipmunge.1
-install -Dm644 man/man5/clipmunge.5 ~/.local/share/man/man5/clipmunge.5
-```
-
 ### Nix
 
 ```sh
@@ -128,7 +122,7 @@ As a flake input:
 ```nix
 inputs.clipmunge.url = "github:rmrfus/clipmunge";
 # This flake's own nixpkgs input is the indirect `flake:nixpkgs`. Point it at
-# yours, or the closure grows a second nixpkgs for one 3.4 MB binary.
+# yours, or the closure grows a second nixpkgs for one 3.2 MB binary.
 inputs.clipmunge.inputs.nixpkgs.follows = "nixpkgs";
 ```
 
@@ -155,7 +149,35 @@ xdg.configFile."clipmunge/config.lua".source = ./clipmunge.lua;
 There is no home-manager module: the unit ships with the package, and the
 config is one `xdg.configFile` line. Note that `notify_command` defaults to
 `notify-send`, which the user manager only finds if `libnotify` is on the
-session PATH.
+session PATH — without it a rule that notifies logs `No such file or
+directory` and carries on.
+
+### From a checkout
+
+```sh
+git clone https://github.com/rmrfus/clipmunge && cd clipmunge
+make && sudo make install                  # /usr/local
+make && make install PREFIX="$HOME/.local"
+make install DESTDIR="$pkgdir" PREFIX=/usr # for a distribution package
+```
+
+This is the path that installs everything: the binary, both man pages, the
+example config under `share/doc/clipmunge`, and the systemd user unit. The
+shipped unit says `ExecStart=%h/.local/bin/clipmunge`, so edit it to wherever
+`PREFIX` actually put the binary — `make install` says so on the way out.
+
+### cargo install
+
+```sh
+cargo install --git https://github.com/rmrfus/clipmunge
+```
+
+**This copies the binary and nothing else.** `cargo install` has no mechanism
+for man pages, units or data files, so there are none — and no checkout to
+take them from either, which is what makes the obvious `install -Dm644
+man/man1/…` incantation fail. Use one of the two paths above if you want the
+documentation; see [BACKLOG.md](BACKLOG.md) for the self-install subcommand
+that would close this.
 
 ### Configuring it
 
@@ -218,9 +240,6 @@ same checks CI does — fmt, clippy, tests, `cargo deny`, `cargo machete` —
 against the *staged* tree inside the dev shell, so a hunk that fails clippy
 cannot sail through because the unstaged fix is still sitting on disk.
 
-Without nix, `make && sudo make install` honours `PREFIX` and `DESTDIR`; that
-is the path for an AUR or Debian package, since `cargo install` copies the
-binary and leaves the man pages, the unit and the example config behind.
 
 ## Size
 
