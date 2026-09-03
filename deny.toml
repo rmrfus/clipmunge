@@ -1,6 +1,18 @@
-# Advisories only. [bans] and [licenses] are for shipping to strangers and for
-# legal review; this is a clipboard daemon on one desk.
+# `cargo deny check advisories`. [licenses] is for legal review and stays out;
+# this is a clipboard daemon on one desk.
 #
-# `cargo deny check advisories` reads the RustSec database and covers what
-# `cargo audit` does, so there is one tool here rather than two.
+# Two defaults are overridden because neither is what anybody actually wants.
+
 [advisories]
+# Upstream default is "warn", which in CI means the build goes green and the
+# line scrolls past. A yanked crate is one the author withdrew - usually
+# because it was broken or unsound - and continuing to ship it is a decision,
+# not an oversight.
+yanked = "deny"
+
+[sources]
+# Absent by default, which means a dependency pulled from any git URL passes
+# unremarked. Nothing here comes from git; if that changes it should be a
+# conscious edit of this file rather than a silent lockfile entry.
+unknown-git = "deny"
+unknown-registry = "deny"

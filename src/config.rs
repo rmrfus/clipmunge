@@ -109,10 +109,19 @@ pub struct Engine {
 
 impl Engine {
     /// Default config location, honouring XDG.
+    ///
+    /// `XDG_CONFIG_HOME` counts only when it is set, non-empty *and* absolute,
+    /// which is what the basedir spec says and is not pedantry. Taking it
+    /// naively, `XDG_CONFIG_HOME=""` yields `PathBuf::from("").join(...)` - a
+    /// path relative to the working directory. Under systemd that directory is
+    /// whatever `WorkingDirectory` says, so the daemon would look for
+    /// `clipmunge/config.lua` relative to it and refuse to start with a path
+    /// nobody recognises.
     pub fn default_path() -> Option<PathBuf> {
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        let base = match std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
+            Some(dir) if dir.is_absolute() => dir,
+            _ => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
+        };
         Some(base.join("clipmunge").join("config.lua"))
     }
 

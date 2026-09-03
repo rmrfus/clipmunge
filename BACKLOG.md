@@ -7,7 +7,7 @@ here was considered and consciously postponed, not forgotten.
 
 | item                | why it matters                                                            |
 | ------------------- | ------------------------------------------------------------------------- |
-| test coverage       | 18 tests, in `urlclean` and the write path; the rule engine has none yet   |
+| test coverage       | 21 tests, in `urlclean`, the write path and sd_notify; the rule engine has none yet |
 | `clipmunge install` | see below; man pages and the unit reach nobody without it                  |
 
 The rule engine is the part still untested, and it is testable without a
@@ -128,6 +128,11 @@ What images break that text does not:
   wants `selections = ["clipboard", "primary"]` and stays off by default.
 - **SIGHUP** was dropped once inotify landed. Might still be wanted for
   scripted reloads.
+- **`STOPPING=1` and a shutdown handler.** The unit is `Type=notify` and sends
+  `READY=1`, but nothing handles SIGTERM: there is nothing to flush, and the
+  published selection dies with the process either way, so a handler today
+  would only make the log tidier. It becomes real the moment shutdown has work
+  to do - unlinking something, releasing a lock.
 
 ## Lua API gaps
 

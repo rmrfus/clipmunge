@@ -16,6 +16,14 @@ exclude = [".github/"]
 
 [dependencies]
 anyhow = "1"
+# Default features kept, deliberately. clap is 347 KB of this binary and the
+# documented trim (default-features = false, then std/help/usage/derive) buys
+# back only 41 KB of it - and 23 of those 41 come from dropping `error-context`,
+# after which a bad flag reports "unexpected argument found" without saying
+# which one. Dropping `color` frees nothing at all: env_logger already pulls
+# anstream, so the dependency is paid for either way (cargo tree -i anstream).
+# 18 KB of a 3.2 MB binary is not worth a default-features = false that will
+# silently skip whatever clap adds to its defaults next.
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
@@ -49,9 +57,24 @@ mlua = { version = "0.12", features = ["lua54", "vendored"] }
 unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
+unreachable = "warn"
 todo = "warn"
 unimplemented = "warn"
+dbg_macro = "warn"
+# The four below are what stop the rest of CLAUDE.md being prose an agent can
+# violate with a green build: `exit` enforces `fn main() -> ExitCode`,
+# `print_stdout` the "diagnostics go to stderr" rule, and the two unsafe ones
+# the SAFETY-comment rule.
+exit = "warn"
+print_stdout = "warn"
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
 
 [profile.release]
 lto = true
 strip = true
+# Measured, not folklore: 191 KB on a 3.2 MB binary (3211 KB with it, 3402 KB
+# without). The build-time and runtime claims for this setting are vendor-blog
+# grade; the size effect is the reason it is here, and this crate counts bytes
+# - see the table in BACKLOG.md.
+codegen-units = 1

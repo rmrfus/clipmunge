@@ -4,22 +4,26 @@ on:
   push:
     branches: [main]
   pull_request:
+  # An advisory published after the last commit is invisible until the next
+  # one. For a daemon that sits on a machine for months, that is the normal
+  # case rather than the edge case.
+  schedule:
+    - cron: '17 6 * * 1'
 
 permissions:
   contents: read
 
 jobs:
   check:
-    # Built through nix rather than rustup so CI compiles the same way a user
-    # running `nix run github:rmrfus/clipmunge` does, down to the rustc the
-    # flake pins. mlua builds Lua 5.4 from C source, so "pure Rust crate, use
-    # rustup" does not quite apply either.
+    # Everything runs through the flake devshell: mlua compiles Lua 5.4 from C
+    # source, so "pure-Rust crate, use rustup" does not apply, and CI then
+    # builds the way `nix run github:rmrfus/clipmunge` does.
     name: fmt · clippy · test · package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -46,15 +50,34 @@ jobs:
       - name: Unused dependencies
         run: nix develop --command cargo machete
 
-      # Cross-compiles for aarch64, the other architecture the flake claims.
-      # mlua builds Lua from C, and `c_char` differs in signedness between the
-      # two - a host-only build is not evidence about the other one. The whole
-      # cross toolchain comes out of cache.nixos.org, so this costs a download
-      # rather than a rustc build.
+      # aarch64-linux is in the flake's `systems`, so it is a promise. mlua
+      # builds Lua from C and `c_char` differs in signedness between the two
+      # architectures, which makes a host-only build no evidence at all.
+      # `nix flake check` builds checks.* but only evaluates packages.*, so the
+      # cross build has to hang off `checks` to be verified rather than parsed.
       - name: Cross-compile check
         run: nix flake check
 
       # Not just a local convenience: without this the flake rots quietly and
-      # the breakage lands on whoever first tries `nix run github:...`.
+      # the breakage lands on whoever first tries `nix run github:...`. It also
+      # runs the suite a second time under buildRustPackage's doCheck, in a
+      # sandbox with no network and no $HOME.
       - name: Package
         run: nix build
+
+  msrv:
+    # rust-version is otherwise a claim nothing checks: nix gives whatever
+    # nixpkgs pins (1.95 today) and a floor of 1.85 would stay green for months
+    # before breaking the first stranger running `cargo install --locked`.
+    name: rust-version floor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@85c23e28f7ccc75a9a153d45d385d94a85464876 # 1.85
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # Check, not build: this proves the floor compiles, and the release
+      # artefact comes from the flake job above.
+      - name: Check on the declared floor
+        run: cargo check --all-targets --locked

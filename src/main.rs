@@ -2,6 +2,7 @@
 
 mod clipboard;
 mod config;
+mod notify_ready;
 mod selection;
 mod urlclean;
 mod watch;
@@ -107,6 +108,9 @@ fn run(args: Args) -> Result<()> {
     clipboard.log_contents(args.debug);
     engine.set_notify(!args.no_notify);
     log::info!("watching the clipboard");
+    // Everything that can refuse to start has now been tried: the config
+    // parsed, the compositor answered, the protocol is there.
+    notify_ready::ready();
 
     loop {
         let timeout = watcher.as_ref().and_then(|w| w.timeout());

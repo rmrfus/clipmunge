@@ -144,8 +144,22 @@ suspends the part of this that concerns the log. See above.
 The compositor to connect to. Required.
 .TP
 .B XDG_CONFIG_HOME
-Where the config lives; falls back to
-.IR ~/.config .
+Where the config lives, and only when it is set to an
+.I absolute
+path; empty or relative falls back to
+.IR ~/.config ,
+as the basedir specification requires. Taking a relative value literally would
+resolve the config against the service's working directory.
+.TP
+.B NOTIFY_SOCKET
+Set by systemd for a
+.B Type=notify
+unit.
+.B clipmunge
+sends
+.B READY=1
+to it once the config has loaded and the compositor has answered, so the unit
+is not considered started before rewrites can happen. Ignored when unset.
 .TP
 .B RUST_LOG
 Overrides the log level, e.g.

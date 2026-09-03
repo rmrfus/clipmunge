@@ -28,6 +28,11 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
   part with tests.
 - `watch.rs` — inotify on the config *directory*, with a settle delay.
 
+## Layout note
+
+`notify_ready.rs` is the sd_notify half of `Type=notify`, hand-rolled on std
+(one `READY=1` datagram) rather than a crate.
+
 ## Non-negotiables
 
 - **The trust boundary is the config FILE, not the interpreter.** The file can
@@ -65,6 +70,14 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
   pick a selection up mid-rewrite; going to the socket first would leave it
   unhandled until some unrelated event arrived. Found by running the race, not
   by reading the code.
+- **The unit is `Type=notify` and something has to send READY=1.** Under
+  `Type=simple` a start "succeeds" for a daemon that is about to exit because
+  no compositor answered. If the startup path grows a step that can fail, it
+  goes *before* `notify_ready::ready()`, not after.
+- **`XDG_CONFIG_HOME` counts only when absolute.** Empty or relative falls back
+  to `$HOME/.config`; taking it naively makes `XDG_CONFIG_HOME=""` a path
+  relative to `WorkingDirectory`, which under systemd is not where anyone put
+  their config.
 - **Every wayland object we are handed gets destroyed.** wayland-rs does not
   send destructors on drop, and `ext-data-control-v1` says the client *must*
   destroy the offer it replaces. Forgetting one leaks a compositor resource
