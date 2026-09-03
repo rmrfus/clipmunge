@@ -88,7 +88,7 @@ What images break that text does not:
 
 ## Proving a regression test actually catches its bug
 
-46 tests, 25 of them in `config.rs`. The rule engine is reachable without a
+49 tests, 28 of them in `config.rs`. The rule engine is reachable without a
 compositor - a `Selection` goes in, a `Rewrite` comes out - which is why
 `Engine::load` is split into "read the file" and `build` from a source string.
 

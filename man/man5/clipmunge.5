@@ -45,7 +45,7 @@ clipmunge.rule {
   name = "tickets",
   match = [[^([A-Z]+)-(\\d+)$]],
   when = "plain-only",
-  handler = function(kind, number)
+  handler = function(_, kind, number)
     return clipmunge.link("https://tracker/" .. kind .. number)
   end,
 }
@@ -300,7 +300,7 @@ clipmunge.settings {
 clipmunge.rule {
   name = "detrack",
   match = [[^(https?://\\S+)$]],
-  handler = function(url)
+  handler = function(_, url)
     local clean, dropped = clipmunge.url.strip_params(url)
     -- nil means nothing matched, which is also what stops this rule from
     -- rewriting its own output for ever.

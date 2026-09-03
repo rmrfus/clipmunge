@@ -42,14 +42,14 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Flavours worth the pipe round trip.
 ///
 /// A LibreOffice selection advertises a dozen private types, some of them
-/// megabytes, and nothing above this layer can look at any of them: a handler
-/// is given capture groups from the plain text, and `is_plain_only` reads the
-/// announced MIME list rather than any content. Reading the rest is pure
-/// latency on every copy.
+/// megabytes, and no rule can look at any of them - a handler is handed the
+/// `Selection` this builds, so what is not read here does not exist further
+/// up. Reading the rest would be pure latency on every copy.
 ///
-/// The rich types are in here rather than just the text family so that the
-/// day a rule wants to see the incoming HTML, the bytes are already there and
-/// only the handler API has to change.
+/// The rich types are in here and not just the text family because a handler
+/// can ask for them: `incoming:get("text/html")` returns what a browser
+/// actually sent rather than a guess made from the plain text. Adding a
+/// flavour to `RICH_MIMES` is therefore an API change, not an optimisation.
 fn worth_reading(mime: &str) -> bool {
     TEXT_MIMES.contains(&mime) || RICH_MIMES.contains(&mime)
 }
