@@ -67,6 +67,16 @@ work. Lookaround and backreferences do not exist, which is the price of
 matching in time linear in the input; the same property means a pattern from
 somebody else's rule set cannot hang the daemon.
 .IP
+Unicode support is trimmed to what clipboard rules need:
+.BR \\ed ,
+.BR \\ew ,
+.B \\es
+and case folding.
+.B \\ep{Greek}
+and the rest of the script classes are not compiled in \- a pattern using one
+fails to load rather than quietly not matching. Restoring them would cost
+about 250 KB of binary.
+.IP
 Patterns are compiled when the config loads, so mistakes surface at start\-up
 and on reload rather than on a later copy.
 .IP

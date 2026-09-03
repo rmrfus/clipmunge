@@ -243,7 +243,7 @@ cannot sail through because the unstaged fix is still sitting on disk.
 
 ## Size
 
-3.2 MB, and the number is watched: [BACKLOG.md](BACKLOG.md) carries the cost of
+3.2 MB, and the number is watched: [DESIGN.md](DESIGN.md) carries the cost of
 every dependency that was weighed, which is how the next one gets argued about.
 `regex` is 917 KB of it with unicode trimmed to what clipboard rules need,
 `clap` 347 KB, and image support would be another 668 KB.
@@ -253,8 +253,8 @@ every dependency that was weighed, which is how the next one gets argued about.
 Early, but tested: 46 tests, and the rule engine's three worst bugs each have
 one named after it. Text and HTML only; the read path is bytes-and-MIME throughout, so
 images are a matter of adding rules rather than rewriting the core, but that
-work has not happened. See [BACKLOG.md](BACKLOG.md), which also records the
-things that were considered and rejected, and why.
+work has not happened. [DESIGN.md](DESIGN.md) records what was considered and
+rejected and why; [BACKLOG.md](BACKLOG.md) is what is merely not done yet.
 
 ## Licence
 

@@ -86,5 +86,5 @@ strip = true
 # Measured, not folklore: 191 KB on a 3.2 MB binary (3211 KB with it, 3402 KB
 # without). The build-time and runtime claims for this setting are vendor-blog
 # grade; the size effect is the reason it is here, and this crate counts bytes
-# - see the table in BACKLOG.md.
+# - see the table in DESIGN.md.
 codegen-units = 1

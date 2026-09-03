@@ -35,7 +35,7 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
 ## This crate watches its binary size
 
 Stated so that `codegen-units = 1` and the dependency arguments in Cargo.toml
-are grounded in something rather than taste. The size table in BACKLOG.md is
+are grounded in something rather than taste. The size table in DESIGN.md is
 how new dependencies get argued about — `regex` costs 917 KB with unicode
 trimmed, `image` would cost 668 KB, `clap` costs 347 KB — and a change that
 moves the binary noticeably is expected to say by how much.
@@ -111,7 +111,7 @@ trim was once recorded here as making the binary *larger*.
   send destructors on drop, and `ext-data-control-v1` says the client *must*
   destroy the offer it replaces. Forgetting one leaks a compositor resource
   per copy for the whole session.
-- **No `zwlr_data_control_v1` fallback.** Decided in BACKLOG.md; every
+- **No `zwlr_data_control_v1` fallback.** Decided in DESIGN.md; every
   protocol carried twice is carried for years.
 
 ## Nix
