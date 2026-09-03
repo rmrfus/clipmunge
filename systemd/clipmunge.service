@@ -22,15 +22,15 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-# notify, not simple. Under Type=simple systemd calls the unit started the
-# moment the process forks, so `systemctl --user start` returns success for a
-# daemon that is about to exit because there is no compositor, and anything
-# ordered after this unit races the point where rewrites actually begin.
-# clipmunge sends READY=1 once the config has loaded and the data-control
-# protocol has answered.
+; notify, not simple. Under Type=simple systemd calls the unit started the
+; moment the process forks, so `systemctl --user start` returns success for a
+; daemon that is about to exit because there is no compositor, and anything
+; ordered after this unit races the point where rewrites actually begin.
+; clipmunge sends READY=1 once the config has loaded and the data-control
+; protocol has answered.
 Type=notify
-# The daemon is not slow to start, but a compositor that never answers should
-# fail the unit rather than hang the boot ordering behind it.
+; The daemon is not slow to start, but a compositor that never answers should
+; fail the unit rather than hang the boot ordering behind it.
 TimeoutStartSec=30
 ; cargo install puts it in ~/.cargo/bin, which is not on the user manager's
 ; PATH; a distribution package puts it in /usr/bin. Pick one. The nix package

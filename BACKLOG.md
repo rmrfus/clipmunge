@@ -7,7 +7,7 @@ here was considered and consciously postponed, not forgotten.
 
 Nothing, as of v0.1.0.
 
-The rule engine is covered now: 43 tests, 22 of them in `config.rs`, reached
+The rule engine is covered now: 46 tests, 25 of them in `config.rs`, reached
 without a compositor because a `Selection` goes in and a `Rewrite` comes out.
 Rule order and first-match-wins, a handler that declines, throws, or returns
 something unusable, `when = "plain-only"`, the escaping in `clipmunge.link`,
@@ -51,7 +51,7 @@ Places man1, man5, the systemd unit, and `config.lua.example` next to where
 git, there is currently nowhere to get the example from, because the checkout
 cargo used is buried in `~/.cargo/git/checkouts`.
 
-Embedding costs 16 KB against a 3.4 MB binary. The better reason to embed is
+Embedding costs 16 KB against a 3.2 MB binary. The better reason to embed is
 that the documentation then cannot drift from the version that ships it, which
 is the usual way a package ends up describing a flag that no longer exists.
 

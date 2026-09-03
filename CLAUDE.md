@@ -27,11 +27,10 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
 - `urlclean.rs` — `strip_params` and the default junk list. Pure, and the only
   part with tests.
 - `watch.rs` — inotify on the config *directory*, with a settle delay.
-
-## Layout note
-
-`notify_ready.rs` is the sd_notify half of `Type=notify`, hand-rolled on std
-(one `READY=1` datagram) rather than a crate.
+- `notify_ready.rs` — the sd_notify half of `Type=notify`, hand-rolled on std
+  because the protocol is one `READY=1` datagram.
+- `main.rs` — arguments, the logger, and the poll loop that ties the four
+  together.
 
 ## This crate watches its binary size
 
