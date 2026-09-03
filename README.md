@@ -9,7 +9,7 @@ clipmunge.rule {
   name = "tickets",
   match = [[^([A-Z]+)-(\d+)$]],
   when = "plain-only",
-  handler = function(kind, number)
+  handler = function(_, kind, number)
     local id = kind .. "-" .. number
     return clipmunge.link("https://tracker.example.com/" .. id, id)
   end,
@@ -219,6 +219,12 @@ something to copy around:
 local clean, dropped = clipmunge.url.strip_params(url)
 if not clean then return nil end   -- nothing to drop, and the loop guard
 ```
+
+A handler's first argument is the incoming selection — `_` in the example at
+the top, because most rules want only their capture groups. When a rule does
+want it, it answers `:text()`, `:get(mime)`, `:has(mime)` and `:mimes()`, so a
+rule can read the `text/html` or the source URL that actually arrived instead
+of guessing from the text. It is valid only for the duration of the call.
 
 `clipmunge.url.default_junk` is the built-in list — the `utm_*` family,
 `fbclid`, `gclid`, `msclkid`, `igshid`, `si`, `yclid`, `spm` and neighbours.

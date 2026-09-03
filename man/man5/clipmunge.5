@@ -98,11 +98,58 @@ not overwrite it. Rules that clean URLs generally want the default, because
 cruft arrives from the browser in the first place.
 .TP
 .B handler
-A function receiving the capture groups of
+A function receiving the incoming selection, then the capture groups of
 .B match
-as its arguments, group 1 first. A group that did not participate arrives as
+with group 1 first. A group that did not participate arrives as
 .BR nil .
 Required.
+.IP
+Most rules want only their captures and write the first parameter as
+.BR _ .
+It is first rather than last on purpose: Lua discards a surplus argument
+without a word, so a handler written for an older shape would keep running and
+go quietly wrong the day somebody added a parameter to it. In front, such a
+rule fails on the next copy with its captures visibly shifted.
+.SS The incoming selection
+The first argument answers four methods and nothing else. It cannot be written
+to, and it is valid only while the handler runs \- a rule that stashes it in an
+upvalue and reads it on a later copy gets an error, not stale bytes.
+.TP
+.BI incoming:text()
+The plain text, the same string
+.B match
+was applied to, or
+.B nil
+if the selection carried no readable text.
+.TP
+.BI incoming:get( mime )
+The bytes of one flavour as a Lua string, or
+.B nil
+if it did not arrive. Lua strings are byte strings, so a flavour that is not
+UTF\-8 survives the trip intact.
+.TP
+.BI incoming:has( mime )
+Whether the flavour arrived, without copying its bytes.
+.TP
+.BI incoming:mimes()
+The flavours that arrived, as a list.
+.IP
+Only the flavours clipmunge reads are there: the
+.B text/plain
+family,
+.BR text/html ,
+.BR chromium/x-source-url ,
+.B text/uri-list
+and
+.BR text/rtf .
+Anything else a source advertises is skipped unread, because no rule could
+look at it and a pipe round trip per flavour is not free.
+.IP
+A rule that reads a rich flavour and writes one back has the same idempotency
+problem as a rule that rewrites URLs, and the same answer: return
+.B nil
+when there is nothing left to change. The marker flavour catches the daemon
+seeing its own work; it cannot catch a rule feeding itself inside one pass.
 .SH HANDLER RESULTS
 A handler returns one of:
 .TP

@@ -24,7 +24,10 @@ use std::process::{Command, Stdio};
 use std::rc::Rc;
 
 use anyhow::{Context, Result, anyhow, bail};
-use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, Variadic, VmState};
+use mlua::{
+    Function, HookTriggers, Lua, LuaOptions, StdLib, Table, UserData, UserDataMethods, Value,
+    Variadic, VmState,
+};
 use regex::Regex;
 
 use crate::clipboard::{Rewrite, Rewriter};
@@ -216,9 +219,16 @@ impl Rewriter for Engine {
                 continue;
             };
 
-            // Capture groups become the handler's arguments, group 1 first: a
-            // rule that wants the whole match can capture it itself. A group
-            // that did not participate arrives as nil rather than "".
+            // The incoming selection first, then the capture groups, group 1
+            // next: a rule that wants the whole match can capture it itself. A
+            // group that did not participate arrives as nil rather than "".
+            //
+            // First rather than last, deliberately. Lua discards a surplus
+            // argument without a word, so appending one would leave every
+            // handler written against the old shape running and quietly wrong
+            // the day its author adds a parameter. Putting it in front makes
+            // every such rule fail on the next copy with the captures visibly
+            // shifted, which is the failure you want.
             let mut args = Vec::with_capacity(caps.len().saturating_sub(1));
             for group in caps.iter().skip(1) {
                 let value = match group {
@@ -237,7 +247,12 @@ impl Rewriter for Engine {
             // Each rule gets the whole budget; one slow rule must not starve
             // the next one on the same copy.
             self.ticks.set(0);
-            match rule.handler.call::<Value>(Variadic::from_iter(args)) {
+            let called = self.lua.scope(|scope| {
+                let sel = scope.create_userdata_ref(incoming)?;
+                rule.handler
+                    .call::<Value>((Value::UserData(sel), Variadic::from_iter(args)))
+            });
+            match called {
                 Ok(Value::Nil) => continue,
                 Ok(value) => match to_rewrite(value) {
                     Ok(out) => {
@@ -373,6 +388,39 @@ fn read_settings(tbl: &Table) -> Result<Settings> {
         settings.secret_mimes = mimes;
     }
     Ok(settings)
+}
+
+/// The incoming selection, as a handler sees it.
+///
+/// Handed in through `Lua::scope`, so it is a borrow rather than a copy - a
+/// selection can be a quarter of a megabyte and cloning one per rewrite to
+/// show it to a rule that will not look would be a poor trade. The scope also
+/// settles the lifetime question structurally: the userdata dies when the call
+/// returns, so a handler that squirrels it away in an upvalue finds it
+/// unusable rather than stale, and mlua refuses writes to it outright.
+impl UserData for Selection {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // The same string `match` ran against, for a rule that wants it
+        // without capturing it.
+        methods.add_method("text", |_, sel, ()| Ok(sel.text().map(str::to_owned)));
+
+        // Bytes, as a Lua string. Lua strings are byte strings, so this is
+        // honest for a flavour that is not UTF-8 - which is the point of
+        // handing over `text/rtf` or an image at all.
+        methods.add_method("get", |lua, sel, mime: String| match sel.get(&mime) {
+            Some(bytes) => Ok(Value::String(lua.create_string(bytes)?)),
+            None => Ok(Value::Nil),
+        });
+
+        // Cheaper than `get(m) ~= nil` when the answer is all you want, and
+        // the only way to ask "did this arrive as rich content" without
+        // pulling the bytes across.
+        methods.add_method("has", |_, sel, mime: String| Ok(sel.has(&mime)));
+
+        methods.add_method("mimes", |lua, sel, ()| {
+            lua.create_sequence_from(sel.mimes().map(str::to_owned))
+        });
+    }
 }
 
 fn build_rule(spec: &Table) -> Result<Rule> {
@@ -644,7 +692,7 @@ mod tests {
         clipmunge.rule {
           name = "echo",
           match = [[^(.+)$]],
-          handler = function(all) return "seen:" .. all end,
+          handler = function(_, all) return "seen:" .. all end,
         }
     "#;
 
@@ -659,7 +707,7 @@ mod tests {
     fn no_rule_matching_leaves_the_clipboard_alone() {
         let mut e = engine(
             r#"clipmunge.rule { name = "digits", match = [[^\d+$]],
-                                handler = function() return "x" end }"#,
+                                handler = function(_) return "x" end }"#,
         )
         .expect("config should load");
         assert!(e.rewrite(&plain("not a number")).is_none());
@@ -670,9 +718,9 @@ mod tests {
         let mut e = engine(
             r#"
             clipmunge.rule { name = "first",  match = [[^x$]],
-                             handler = function() return "one" end }
+                             handler = function(_) return "one" end }
             clipmunge.rule { name = "second", match = [[^x$]],
-                             handler = function() return "two" end }
+                             handler = function(_) return "two" end }
             "#,
         )
         .expect("config should load");
@@ -685,9 +733,9 @@ mod tests {
         let mut e = engine(
             r#"
             clipmunge.rule { name = "abstains", match = [[^x$]],
-                             handler = function() return nil end }
+                             handler = function(_) return nil end }
             clipmunge.rule { name = "answers",  match = [[^x$]],
-                             handler = function() return "second" end }
+                             handler = function(_) return "second" end }
             "#,
         )
         .expect("config should load");
@@ -702,9 +750,9 @@ mod tests {
         let mut e = engine(
             r#"
             clipmunge.rule { name = "explodes", match = [[^x$]],
-                             handler = function() error("boom") end }
+                             handler = function(_) error("boom") end }
             clipmunge.rule { name = "survives", match = [[^x$]],
-                             handler = function() return "still here" end }
+                             handler = function(_) return "still here" end }
             "#,
         )
         .expect("config should load");
@@ -719,9 +767,9 @@ mod tests {
         let mut e = engine(
             r#"
             clipmunge.rule { name = "returns-a-number", match = [[^x$]],
-                             handler = function() return 42 end }
+                             handler = function(_) return 42 end }
             clipmunge.rule { name = "returns-a-string", match = [[^x$]],
-                             handler = function() return "ok" end }
+                             handler = function(_) return "ok" end }
             "#,
         )
         .expect("config should load");
@@ -736,7 +784,7 @@ mod tests {
         // Nothing would reach the clipboard, so the rule has not done its job.
         let mut e = engine(
             r#"clipmunge.rule { name = "chatty", match = [[^x$]],
-                                handler = function() return { notify = "hi" } end }"#,
+                                handler = function(_) return { notify = "hi" } end }"#,
         )
         .expect("config should load");
         assert!(e.rewrite(&plain("x")).is_none());
@@ -748,7 +796,7 @@ mod tests {
             r#"clipmunge.rule {
                  name = "groups",
                  match = [[^(a)(b)?(c)$]],
-                 handler = function(one, two, three)
+                 handler = function(_, one, two, three)
                    return one .. "/" .. tostring(two) .. "/" .. three
                  end,
                }"#,
@@ -761,7 +809,7 @@ mod tests {
     #[test]
     fn plain_only_skips_a_rule_when_a_rich_flavour_is_present() {
         let src = r#"clipmunge.rule { name = "linkify", match = [[^x$]], when = "plain-only",
-                                      handler = function() return "linked" end }"#;
+                                      handler = function(_) return "linked" end }"#;
         let mut e = engine(src).expect("config should load");
         assert!(e.rewrite(&plain("x")).is_some(), "bare text should match");
 
@@ -777,7 +825,7 @@ mod tests {
     fn an_unknown_when_value_fails_the_load() {
         let err = load_err(
             r#"clipmunge.rule { name = "typo", match = [[^x$]], when = "plainonly",
-                                handler = function() return "x" end }"#,
+                                handler = function(_) return "x" end }"#,
         );
         assert!(err.to_string().contains("plainonly"), "{err:#}");
     }
@@ -786,7 +834,7 @@ mod tests {
     fn a_bad_pattern_fails_at_load_rather_than_on_some_later_copy() {
         let err = load_err(
             r#"clipmunge.rule { name = "unbalanced", match = [[^(x$]],
-                                handler = function() return "x" end }"#,
+                                handler = function(_) return "x" end }"#,
         );
         assert!(err.to_string().contains("unbalanced"), "{err:#}");
     }
@@ -797,7 +845,7 @@ mod tests {
             r#"clipmunge.rule {
                  name = "link",
                  match = [[^(.+)$]],
-                 handler = function(s) return clipmunge.link("https://e.com/?a=1&b=2", s) end,
+                 handler = function(_, s) return clipmunge.link("https://e.com/?a=1&b=2", s) end,
                }"#,
         )
         .expect("config should load");
@@ -824,7 +872,7 @@ mod tests {
                 r#"local ok, m = pcall(require, "{lib}")
                    if ok and type(m) == "table" then error("{lib} is reachable") end
                    clipmunge.rule {{ name = "n", match = [[^x$]],
-                                     handler = function() return "x" end }}"#
+                                     handler = function(_) return "x" end }}"#
             );
             engine(&src).unwrap_or_else(|e| panic!("{lib} escaped the sandbox: {e:#}"));
         }
@@ -840,7 +888,7 @@ mod tests {
             r#"clipmunge.rule {
                  name = "link",
                  match = [[^(.+)$]],
-                 handler = function(s) return clipmunge.link("https://e.com/", s) end,
+                 handler = function(_, s) return clipmunge.link("https://e.com/", s) end,
                }"#,
         )
         .expect("config should load");
@@ -865,9 +913,9 @@ mod tests {
         let mut e = engine(
             r#"
             clipmunge.rule { name = "spins",  match = [[^x$]],
-                             handler = function() while true do end end }
+                             handler = function(_) while true do end end }
             clipmunge.rule { name = "normal", match = [[^x$]],
-                             handler = function() return "after the spin" end }
+                             handler = function(_) return "after the spin" end }
             "#,
         )
         .expect("config should load");
@@ -900,9 +948,9 @@ mod tests {
               return acc
             end
             clipmunge.rule { name = "burn1", match = [[^x$]],
-                             handler = function() burn() return nil end }
+                             handler = function(_) burn() return nil end }
             clipmunge.rule { name = "burn2", match = [[^x$]],
-                             handler = function() return "burnt " .. burn() end }
+                             handler = function(_) return "burnt " .. burn() end }
             "#,
         )
         .expect("config should load");
@@ -926,7 +974,7 @@ mod tests {
             r#"clipmunge.rule {
                  name = "tells",
                  match = [[^x$]],
-                 handler = function() return { text = "y", notify = "did a thing" } end,
+                 handler = function(_) return { text = "y", notify = "did a thing" } end,
                }"#,
         )
         .expect("config should load");
@@ -937,6 +985,88 @@ mod tests {
 
     fn mimes(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn a_handler_can_read_the_flavours_that_arrived() {
+        let mut e = engine(
+            r#"clipmunge.rule {
+                 name = "inspect",
+                 match = [[^(x)$]],
+                 handler = function(incoming, cap)
+                   return table.concat({
+                     "cap=" .. cap,
+                     "text=" .. tostring(incoming:text()),
+                     "html=" .. tostring(incoming:get("text/html")),
+                     "missing=" .. tostring(incoming:get("text/rtf")),
+                     "has-html=" .. tostring(incoming:has("text/html")),
+                     "n=" .. #incoming:mimes(),
+                   }, " ")
+                 end,
+               }"#,
+        )
+        .expect("config should load");
+
+        let mut sel = plain("x");
+        sel.set(HTML_MIME, b"<b>x</b>".to_vec());
+        let out = e.rewrite(&sel).expect("should match");
+        assert_eq!(
+            text_of(&out),
+            "cap=x text=x html=<b>x</b> missing=nil has-html=true n=6"
+        );
+    }
+
+    /// The userdata is handed in through `Lua::scope`, so it must not survive
+    /// the call - a handler that stashes it in an upvalue and reads it on the
+    /// next copy would otherwise be looking at a borrow that is gone.
+    #[test]
+    fn the_incoming_selection_does_not_outlive_the_call() {
+        let mut e = engine(
+            r#"
+            local stashed = nil
+            clipmunge.rule {
+              name = "stash",
+              match = [[^first$]],
+              handler = function(incoming) stashed = incoming; return "stashed" end,
+            }
+            clipmunge.rule {
+              name = "reuse",
+              match = [[^second$]],
+              handler = function()
+                local ok, err = pcall(function() return stashed:text() end)
+                if ok then error("the stale userdata was readable") end
+                return "expired"
+              end,
+            }
+            "#,
+        )
+        .expect("config should load");
+
+        assert_eq!(
+            text_of(&e.rewrite(&plain("first")).expect("first")),
+            "stashed"
+        );
+        assert_eq!(
+            text_of(&e.rewrite(&plain("second")).expect("second")),
+            "expired"
+        );
+    }
+
+    #[test]
+    fn a_handler_cannot_write_to_the_incoming_selection() {
+        let mut e = engine(
+            r#"clipmunge.rule {
+                 name = "tamper",
+                 match = [[^x$]],
+                 handler = function(incoming)
+                   local ok = pcall(function() incoming.text = 42 end)
+                   return "writable=" .. tostring(ok)
+                 end,
+               }"#,
+        )
+        .expect("config should load");
+        let out = e.rewrite(&plain("x")).expect("should match");
+        assert_eq!(text_of(&out), "writable=false");
     }
 
     #[test]
@@ -966,7 +1096,7 @@ mod tests {
         let e = engine(
             r#"clipmunge.settings { secret_mimes = { "x-vault-secret" } }
                clipmunge.rule { name = "n", match = [[^x$]],
-                                handler = function() return "x" end }"#,
+                                handler = function(_) return "x" end }"#,
         )
         .expect("config should load");
         assert!(e.is_secret(&mimes(&["text/plain", "x-vault-secret"])));
@@ -983,7 +1113,7 @@ mod tests {
         let e = engine(
             r#"clipmunge.settings { secret_mimes = {} }
                clipmunge.rule { name = "n", match = [[^x$]],
-                                handler = function() return "x" end }"#,
+                                handler = function(_) return "x" end }"#,
         )
         .expect("an empty secret_mimes is a decision, not an error");
         assert!(!e.is_secret(&mimes(&["text/plain", "x-kde-passwordManagerHint"])));
@@ -995,7 +1125,7 @@ mod tests {
         let e = engine(
             r#"clipmunge.settings { notifi_command = { "true" } }
                clipmunge.rule { name = "n", match = [[^x$]],
-                                handler = function() return "x" end }"#,
+                                handler = function(_) return "x" end }"#,
         )
         .expect("an unknown key warns rather than failing");
         assert_eq!(e.rule_names(), vec!["n"]);
@@ -1008,7 +1138,7 @@ mod tests {
 
     #[test]
     fn a_rule_without_a_handler_or_a_match_fails_the_load() {
-        load_err(r#"clipmunge.rule { name = "no-match", handler = function() return "x" end }"#);
+        load_err(r#"clipmunge.rule { name = "no-match", handler = function(_) return "x" end }"#);
         load_err(r#"clipmunge.rule { name = "no-handler", match = [[^x$]] }"#);
     }
 }

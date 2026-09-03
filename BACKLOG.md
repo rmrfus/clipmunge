@@ -82,45 +82,6 @@ a reputation.
 
 ## Lua API gaps
 
-### A handler cannot see the incoming selection
-
-The largest open question here, and half-built already. A handler receives the
-capture groups of `match`, which is a regex over the plain text, and nothing
-else. It cannot look at the `text/html` that arrived, or at the MIME list, or
-at anything the rule did not itself capture.
-
-That rules out a whole class of rule nobody can write today: fix the href
-inside HTML somebody copied out of a page, rewrite text and markup together so
-they agree, decide based on which flavours are present rather than on what the
-text looks like.
-
-The read path is already done. `worth_reading` deliberately covers
-`RICH_MIMES` and not just the text family, so `text/html`, the source URL,
-`text/uri-list` and `text/rtf` are fetched and sitting in the `Selection` by
-the time a rule runs — see the comment at `clipboard.rs:50`. Only the handler
-API has to change.
-
-Two shapes, and they are not equivalent:
-
-- **A second argument.** `handler = function(caps..., incoming)`. Breaks every
-  handler declared with a fixed arity that a caller now passes one more
-  argument to — which in Lua is silently harmless, so it breaks nothing
-  loudly, which is worse. It also puts the incoming selection after a variable
-  number of capture groups, so a rule has to count.
-- **`clipmunge.incoming` as a table**, valid for the duration of the call.
-  Additive: existing rules never mention it and are unaffected. Costs a table
-  built per rewrite, and it is ambient rather than passed, which reads worse
-  but is the only one that does not touch the existing shape.
-
-The second is probably right for the same reason `flavour_order` should be a
-setting rather than a change to what a handler returns: the shape every
-published rule set is written against is the expensive thing to move.
-
-Wait for a rule that actually wants it. But do not let the read-path work go
-unrecorded in the meantime, which is what this entry is for.
-
-### Smaller
-
 - `clipmunge.url.parse` / `build`. Not obviously worth a real URL parser as a
   dependency: `strip_params` needed only the text between `?` and `#`, and
   nothing else has asked for more yet. Revisit when a rule wants to touch the

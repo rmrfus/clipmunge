@@ -77,6 +77,12 @@ trim was once recorded here as making the binary *larger*.
   the text has been pulled out of the pipe, at which point `--debug` has
   already put it in the journal. The list is configurable, the decision is
   not. Its log line says nothing about the content, on purpose.
+- **The incoming selection is the handler's FIRST argument.** Appending it
+  would be silent: Lua drops a surplus argument without complaint, so old
+  rules would run and be quietly wrong. It is handed over through
+  `Lua::scope`, which is what makes it a borrow rather than a quarter-megabyte
+  copy per rewrite and what makes it expire with the call instead of going
+  stale.
 - **`application/x-clipmunge` is the loop guard**, checked against the
   *advertised* MIME list before anything is read — not after.
 - **Nothing blocks inside an event dispatch.** The pipe a pasting client hands

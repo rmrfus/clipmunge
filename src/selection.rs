@@ -83,6 +83,11 @@ impl Selection {
             .map(|(_, d)| d.as_slice())
     }
 
+    /// Whether a flavour arrived at all, without copying its bytes out.
+    pub fn has(&self, mime: &str) -> bool {
+        self.flavours.iter().any(|(m, _)| m == mime)
+    }
+
     pub fn mimes(&self) -> impl Iterator<Item = &str> {
         self.flavours.iter().map(|(m, _)| m.as_str())
     }

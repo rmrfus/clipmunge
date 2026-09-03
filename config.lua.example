@@ -1,5 +1,10 @@
 -- clipmunge config. Copy to $XDG_CONFIG_HOME/clipmunge/config.lua.
 --
+-- A handler's first argument is always the incoming selection; the capture
+-- groups follow it. Most rules do not need it and write `_`. It answers
+-- :text(), :get(mime), :has(mime) and :mimes(), and is valid only for the
+-- duration of the call.
+--
 -- Rules run in the order they are declared and the first match wins. A handler
 -- returns nil to decline, a string to replace the text, or a table keyed by
 -- MIME type to say exactly what each flavour should contain. The key "text" is
@@ -39,7 +44,7 @@ clipmunge.rule {
   name = "tickets",
   match = [[^([A-Z]+)-(\d+)$]],
   when = "plain-only",
-  handler = function(kind, number)
+  handler = function(_, kind, number)
     local base = trackers[kind]
     if not base then
       return nil
@@ -55,7 +60,7 @@ clipmunge.rule {
 clipmunge.rule {
   name = "detrack",
   match = [[^(https?://\S+)$]],
-  handler = function(url)
+  handler = function(_, url)
     local clean, dropped = clipmunge.url.strip_params(url)
     -- nil for "nothing to drop". That is also this rule's loop guard: without
     -- it a cleaned URL would match again on the next round and never settle.
@@ -66,11 +71,27 @@ clipmunge.rule {
   end,
 }
 
+-- What that first argument is for: a browser copying a link already carries
+-- the href in a flavour of its own, which beats guessing at it from the text.
+-- Commented out because it overlaps the rule above.
+--
+-- clipmunge.rule {
+--   name = "detrack-the-real-href",
+--   match = [[^\S+$]],
+--   handler = function(incoming)
+--     local href = incoming:get("chromium/x-source-url")
+--     if not href then return nil end
+--     local clean = clipmunge.url.strip_params(href)
+--     if not clean then return nil end
+--     return clipmunge.link(clean, clean)
+--   end,
+-- }
+
 -- Amazon puts the product id in the middle of a path full of SEO words.
 clipmunge.rule {
   name = "amazon",
   match = [[^https?://([^/]*amazon\.[^/]+)/(?:.*/)?(?:dp|gp/product|gp/aw/d)/([A-Z0-9]{10})]],
-  handler = function(host, asin)
+  handler = function(_, host, asin)
     return "https://" .. host .. "/dp/" .. asin
   end,
 }
