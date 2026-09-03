@@ -1,3 +1,9 @@
+# Nothing is excluded here on purpose. The MSRV job's toolchain used to need
+# an ignore, because pinning the `1.88` branch put the version in the ref where
+# an update would move it; it now pins `v1` and passes `toolchain: "1.88"` as
+# an input, which no action update touches. An ignore rule would state a reason
+# that is no longer true.
+#
 # Actions are pinned to commit SHAs (a tag is mutable - see the
 # tj-actions/changed-files compromise, CVE-2025-30066, where every tag was
 # repointed at a commit that dumped CI secrets). A SHA that nothing bumps
@@ -9,13 +15,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    ignore:
-      # Not a version to keep current. The MSRV job pins this to the declared
-      # floor deliberately; bumped to stable it stays green while testing a
-      # floor the crate never claimed, which is silent decay of the one thing
-      # that job exists to catch. Its versions are branches, not tags, so the
-      # pin has to be re-resolved by hand when rust-version moves.
-      - dependency-name: dtolnay/rust-toolchain
 
   # Cargo.lock only. The manifest uses caret ranges, so a patch release needs
   # no edit here; what needs watching is the pinned graph the flake builds.

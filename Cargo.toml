@@ -22,19 +22,19 @@ exclude = [".github/"]
 
 [dependencies]
 anyhow = "1"
-# clap is 347 KB of this binary, for five boolean flags. Trimmed, but only so
-# far: `error-context` stays, because without it a bad flag reports "unexpected
-# argument found" without saying which one, and that is 23 of the 41 KB the
-# full trim would return. `color` is dropped and frees nothing measurable -
-# env_logger pulls anstream regardless (cargo tree -i anstream) - so what is
-# left is `suggestions`, and the honest total is 18 KB.
-clap = { version = "4", default-features = false, features = [
-    "std",
-    "help",
-    "usage",
-    "error-context",
-    "derive",
-] }
+# Default features, measured rather than assumed. clap is 347 KB of this
+# binary, but trimming it here is a net loss: keeping `error-context` and
+# `suggestions` - and both earn their keep, one names the offending flag and
+# the other prints "a similar argument exists" plus the real Usage line -
+# leaves only `color` to drop, and that frees nothing because env_logger keeps
+# anstream in the graph regardless (cargo tree -i anstream). Measured at
+# 3211000 bytes trimmed against 3211320 with defaults - 320 bytes, for a
+# default-features = false that silently opts out of whatever clap adds next.
+# (Dropping `suggestions` as well would be 18280, which is what that feature
+# costs; it is not free to drop, see above.) All three measured on the same
+# tree: comparing against a figure from an older commit is how the first pass
+# here concluded the trim made the binary bigger.
+clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
 # Already in the tree via mlua; a direct dep buys signal(2) for nothing. Used

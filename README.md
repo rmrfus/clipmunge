@@ -204,6 +204,13 @@ Without nix, `make && sudo make install` honours `PREFIX` and `DESTDIR`; that
 is the path for an AUR or Debian package, since `cargo install` copies the
 binary and leaves the man pages, the unit and the example config behind.
 
+## Size
+
+3.2 MB, and the number is watched: [BACKLOG.md](BACKLOG.md) carries the cost of
+every dependency that was weighed, which is how the next one gets argued about.
+`regex` is 917 KB of it with unicode trimmed to what clipboard rules need,
+`clap` 347 KB, and image support would be another 668 KB.
+
 ## Status
 
 Early. Text and HTML only; the read path is bytes-and-MIME throughout, so

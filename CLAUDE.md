@@ -33,6 +33,19 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
 `notify_ready.rs` is the sd_notify half of `Type=notify`, hand-rolled on std
 (one `READY=1` datagram) rather than a crate.
 
+## This crate watches its binary size
+
+Stated so that `codegen-units = 1` and the dependency arguments in Cargo.toml
+are grounded in something rather than taste. The size table in BACKLOG.md is
+how new dependencies get argued about — `regex` costs 917 KB with unicode
+trimmed, `image` would cost 668 KB, `clap` costs 347 KB — and a change that
+moves the binary noticeably is expected to say by how much.
+
+Measure with `nix build`, not `cargo build --release`: nixpkgs wraps cargo in
+`cargo-auditable`, so the two are not comparable, and **measure both sides on
+the same tree**. Comparing against a figure from an older commit is how a clap
+trim was once recorded here as making the binary *larger*.
+
 ## Non-negotiables
 
 - **The trust boundary is the config FILE, not the interpreter.** The file can
@@ -75,9 +88,13 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
   that configures `unknown-git = "deny"` and runs only `advisories` has a
   setting nothing enforces. Verified by pointing `allow-registry` at a
   nonexistent index - `advisories` still said ok, `sources` failed.
-- **The dtolnay/rust-toolchain pin is excluded from dependabot.** It is the
-  declared floor, not a version to keep current. Bumped to stable the MSRV job
-  stays green while testing a floor the crate never claimed.
+- **`rust-version` and the MSRV job's `toolchain:` input move in the same
+  commit.** Nothing enforces the pairing. Raise the floor alone and the job
+  keeps passing on the old toolchain, so it verifies a floor the crate no
+  longer claims. The pin is `dtolnay/rust-toolchain@<sha> # v1` with the
+  version as an input precisely so dependabot can keep the action current
+  without touching the toolchain - do not pin a version branch instead, that
+  puts the version back in the ref.
 - **The unit is `Type=notify` and something has to send READY=1.** Under
   `Type=simple` a start "succeeds" for a daemon that is about to exit because
   no compositor answered. If the startup path grows a step that can fail, it

@@ -7,8 +7,17 @@ on:
   # An advisory published after the last commit is invisible until the next
   # one. For a daemon that sits on a machine for months, that is the normal
   # case rather than the edge case.
+  #
+  # Known limit, accepted rather than overlooked: GitHub disables a scheduled
+  # workflow in a public repository after 60 days with no repository activity,
+  # which is the same dormancy this schedule exists to cover. Accepted because
+  # the weeks right after the last commit are when a fresh advisory is most
+  # likely to matter and least likely to be looked for; past 60 quiet days the
+  # crate is not being deployed anywhere new either. workflow_dispatch is here
+  # so the run can be driven from outside the repository if that changes.
   schedule:
     - cron: '17 6 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -79,7 +88,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88
+      # v1, not the 1.88 branch. Both are SHA pins, but they put the version
+      # in different places: the 1.88 branch bakes the toolchain into its own
+      # action.yml, so a bump silently changes what is tested, and the pin has
+      # to be excluded from dependabot to stay honest. On v1 `toolchain` is
+      # `required: true` with no default - the version is an input we own, the
+      # action can be updated freely, and forgetting the input fails the step
+      # outright rather than quietly testing stable.
+      #
+      # It still does not follow rust-version by itself. Move both together.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: "1.88"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Check, not build: this proves the floor compiles, and the release
