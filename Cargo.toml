@@ -1,6 +1,6 @@
 [package]
 name = "clipmunge"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 # mlua-sys 0.12 refuses to build below 1.88, and `cargo install --locked`
 # resolves the whole graph, so this is the real floor. Claiming 1.85 was a lie
