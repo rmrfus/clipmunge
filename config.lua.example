@@ -1,0 +1,70 @@
+-- clipmunge config. Copy to $XDG_CONFIG_HOME/clipmunge/config.lua.
+--
+-- Rules run in the order they are declared and the first match wins. A handler
+-- returns nil to decline, a string to replace the text, or a table keyed by
+-- MIME type to say exactly what each flavour should contain. The key "text" is
+-- shorthand for the whole text/plain family.
+--
+-- `match` is a real regular expression (the Rust regex crate), not a Lua
+-- pattern: alternation and {6,9} work, lookaround and backreferences do not.
+-- It is compiled when the config loads, so a typo fails now rather than on
+-- some unlucky copy three hours from now.
+--
+-- Rules have no io, no os and no C loader: those libraries are never loaded,
+-- so a handler cannot reach the network, the filesystem or another process,
+-- and it runs on an instruction budget so an endless loop costs a logged
+-- error rather than your clipboard.
+--
+-- The FILE, though, is trusted the way this shell's rc file is: clipmunge.settings
+-- can name a notify_command, and that runs a program. Read a rule set before
+-- you install it.
+
+-- Bare ticket identifiers become links, while the plain text stays the bare
+-- identifier so that shell pastes keep working.
+--
+-- when = "plain-only" holds us back when the selection already carries a rich
+-- flavour: a browser copying a link knows the href better than we do.
+local trackers = {
+  BUG  = "https://bugs.example.com/",
+  TASK = "https://tasks.example.com/",
+}
+
+clipmunge.rule {
+  name = "tickets",
+  match = [[^([A-Z]+)-(\d+)$]],
+  when = "plain-only",
+  handler = function(kind, number)
+    local base = trackers[kind]
+    if not base then
+      return nil
+    end
+    local id = kind .. "-" .. number
+    return clipmunge.link(base .. id, id)
+  end,
+}
+
+-- Drop the tracking cruft that follows links out of phones and newsletters.
+-- The default list is built in; see clipmunge.url.default_junk, or pass your
+-- own table as the second argument.
+clipmunge.rule {
+  name = "detrack",
+  match = [[^(https?://\S+)$]],
+  handler = function(url)
+    local clean, dropped = clipmunge.url.strip_params(url)
+    -- nil for "nothing to drop". That is also this rule's loop guard: without
+    -- it a cleaned URL would match again on the next round and never settle.
+    if not clean then return nil end
+    local out = clipmunge.link(clean, clean)
+    out.notify = "Dropped " .. table.concat(dropped, ", ")
+    return out
+  end,
+}
+
+-- Amazon puts the product id in the middle of a path full of SEO words.
+clipmunge.rule {
+  name = "amazon",
+  match = [[^https?://([^/]*amazon\.[^/]+)/(?:.*/)?(?:dp|gp/product|gp/aw/d)/([A-Z0-9]{10})]],
+  handler = function(host, asin)
+    return "https://" .. host .. "/dp/" .. asin
+  end,
+}

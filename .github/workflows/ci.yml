@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # Built through nix rather than rustup so CI compiles the same way a user
+    # running `nix run github:rmrfus/clipmunge` does, down to the rustc the
+    # flake pins. mlua builds Lua 5.4 from C source, so "pure Rust crate, use
+    # rustup" does not quite apply either.
+    name: fmt · clippy · test · package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Format
+        run: nix develop --command cargo fmt --all --check
+
+      - name: Clippy
+        run: nix develop --command cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: nix develop --command cargo test --locked
+
+      - name: Man pages
+        run: |
+          nix develop --command groff -man -Tutf8 -ww -z man/man1/clipmunge.1
+          nix develop --command groff -man -Tutf8 -ww -z man/man5/clipmunge.5
+
+      - name: Advisories
+        run: nix develop --command cargo deny check advisories
+
+      # A dependency nobody calls is not a crash; it keeps turning up in the
+      # advisory scan above and can hold rust-version above what we need.
+      - name: Unused dependencies
+        run: nix develop --command cargo machete
+
+      # Cross-compiles for aarch64, the other architecture the flake claims.
+      # mlua builds Lua from C, and `c_char` differs in signedness between the
+      # two - a host-only build is not evidence about the other one. The whole
+      # cross toolchain comes out of cache.nixos.org, so this costs a download
+      # rather than a rustc build.
+      - name: Cross-compile check
+        run: nix flake check
+
+      # Not just a local convenience: without this the flake rots quietly and
+      # the breakage lands on whoever first tries `nix run github:...`.
+      - name: Package
+        run: nix build

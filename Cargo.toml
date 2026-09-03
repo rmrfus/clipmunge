@@ -1,0 +1,57 @@
+[package]
+name = "clipmunge"
+version = "0.1.0"
+edition = "2024"
+# The floor is edition 2024, which landed in 1.85; nothing here needs a
+# newer language feature.
+rust-version = "1.85"
+description = "Rule-driven Wayland clipboard rewriter that can put different content in different MIME types"
+license = "MIT"
+repository = "https://github.com/rmrfus/clipmunge"
+homepage = "https://github.com/rmrfus/clipmunge"
+readme = "README.md"
+keywords = ["wayland", "clipboard", "sway", "lua", "wlroots"]
+categories = ["command-line-utilities"]
+exclude = [".github/"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"
+# Already in the tree via mlua; a direct dep buys signal(2) for nothing. Used
+# in exactly one place, to hand the notify children to the kernel to reap.
+libc = "0.2"
+# Not really a new dependency: wayland-client already pulls rustix in.
+rustix = { version = "1", features = ["pipe", "event", "fs", "std"] }
+# Unicode is trimmed to what clipboard rules actually need: \d, \w, \s and case
+# folding. Putting \p{Script} back costs about 250 KB.
+regex = { version = "1", default-features = false, features = [
+    "std",
+    "perf",
+    "unicode-perl",
+    "unicode-case",
+] }
+wayland-client = "0.31"
+# ext-data-control-v1 lives in staging.
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+mlua = { version = "0.12", features = ["lua54", "vendored"] }
+
+# The no-panic policy, machine-checked. These live in clippy's `restriction`
+# group, which is allow-by-default and is not switched on by `clippy::all` or
+# `pedantic` - each has to be named. `warn` plus the `-D warnings` already in
+# CI and the pre-commit hook is what makes them fail.
+#
+# The table rather than a crate-level `#![deny]`: the attribute is crate-wide
+# and would poison #[cfg(test)] too, where an unwrap is the right thing to
+# write. clippy.toml turns it back off there.
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+[profile.release]
+lto = true
+strip = true

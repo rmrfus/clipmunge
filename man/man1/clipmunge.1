@@ -1,0 +1,171 @@
+.TH CLIPMUNGE 1 "2026-09-02" "clipmunge" "User Commands"
+.SH NAME
+clipmunge \- rule\-driven Wayland clipboard rewriter
+.SH SYNOPSIS
+.B clipmunge
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B clipmunge
+watches the Wayland clipboard and rewrites what it finds there according to
+rules you write in Lua. A rule can leave the plain text alone while attaching
+a link to the
+.B text/html
+flavour, or replace a URL with a version that has had its tracking parameters
+removed.
+.PP
+The thing it can do that other clipboard tools cannot is serve
+.B different bytes for different MIME types of the same selection.
+.BR wl-copy (1)
+hands out the same buffer for every type it advertises, so it cannot make a
+selection whose plain text is a bare ticket number and whose HTML is a link to
+that ticket. clipmunge speaks the
+.B ext-data-control-v1
+protocol directly, where a data source answers each request separately.
+.PP
+It does nothing at all until you give it rules. There is no built\-in
+behaviour and no default rule set: a clipboard daemon that starts rewriting
+things you did not ask it to rewrite is a bad neighbour. Without a config file
+it prints the path it looked at and exits.
+.SH OPTIONS
+.TP
+.BR \-c ", " \-\-config " " \fIPATH\fR
+Load \fIPATH\fR instead of the default
+.IR $XDG_CONFIG_HOME/clipmunge/config.lua .
+Symlinks are followed on every load, and both ends of the link are watched.
+See RELOADING.
+.TP
+.B \-\-check
+Load the config, report anything wrong with it, and exit without connecting to
+the compositor. Patterns are compiled here, so a bad regular expression is
+reported now rather than on some unlucky copy later.
+.TP
+.B \-\-no\-reload
+Do not watch the config directory for changes.
+.TP
+.B \-\-no\-notify
+Never run the notify command, whatever the rules ask for.
+.TP
+.BR \-d ", " \-\-debug
+Log every selection that arrives and every rewrite, before and after.
+.IP
+.B This writes clipboard contents to the log in full.
+Everything you copy while it is on ends up in the journal, including whatever
+a password manager puts there. It is a switch for working on a rule, not a
+setting to leave on. Without it the log records MIME types and byte counts
+only, never content.
+.TP
+.BR \-h ", " \-\-help
+Print a usage summary, including the config path this machine would use, and
+exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH RELOADING
+The directory holding the config is watched, and a change reloads the rules
+within about 150 milliseconds. The
+.I directory
+rather than the file, because editors do not write in place: vim writes a
+temporary file and renames it over the target, which leaves a watch on the
+original inode looking at a file nobody will touch again. Watching the
+directory also picks up changes to anything the config
+.BR require s
+from a neighbouring file.
+.PP
+When the config is a symlink, both directories are watched: the one holding
+the name you gave, and the one holding the file it resolves to. A dotfiles
+repository is edited at the far end of the link; a config manager such as
+home\-manager or stow instead publishes a new file and moves the link, and the
+event then happens at the near end. A candidate directory on a read\-only
+filesystem is skipped, with a line saying so \- a file that cannot be edited
+in place cannot be worth watching, and on NixOS the far end is
+.I /nix/store
+whose traffic has nothing to do with your rules.
+.PP
+The config is resolved afresh on every load rather than once at start\-up, so
+a swapped symlink is followed to the new file rather than pinning the daemon
+to the one it happened to start with.
+.PP
+A config that fails to load does not disarm the daemon. The error is logged
+and the rules that were already working stay in place, so a typo cannot
+silently switch your clipboard back to plain.
+.SH SECURITY
+The config file is trusted, in the same way a shell startup file is. It can
+set
+.B notify_command
+with
+.BR clipmunge.settings ,
+and that runs a program with rule output as one of its arguments. That is what
+the setting is for, and it is also why a rule set somebody sent you is not
+something to install unread.
+.PP
+A
+.I rule
+gets much less.
+.BR io ,
+.BR os ,
+.BR dofile ,
+.BR load ,
+.B coroutine
+and the C module loader are never loaded into the interpreter \- not removed
+afterwards, never loaded \- and
+.B package.path
+points at the config directory alone. At copy time a rule can compute and
+nothing else: it cannot open a file, reach the network, or start a process.
+.PP
+The difference between \(lqnever loaded\(rq and \(lqremoved\(rq is the whole
+guarantee. Setting a global to
+.B nil
+leaves the library in
+.BR package.loaded ,
+which is the first place
+.B require
+looks, so
+.B require(\(dqos\(dq).execute
+finds it again. Not loading it leaves nothing to find.
+.PP
+Handlers run on a budget \- roughly ten million VM instructions and 64 MB of
+Lua heap, thousands of times what a real rule needs. It is a guard against
+your own endless loop, not against an adversary: a rule that overruns is
+logged and skipped, and the clipboard keeps working.
+.PP
+The one thing a rule can send outwards is the text of a notification, and even
+that it only describes; the daemon decides whether to send it, truncates it to
+200 characters, and sends at most one per rewrite. The notify command is a
+list of arguments, never a shell string, so clipboard content substituted into
+it stays an argument no matter what punctuation it contains.
+.B \-\-no\-notify
+switches the mechanism off entirely.
+.PP
+.B \-\-debug
+suspends the part of this that concerns the log. See above.
+.SH ENVIRONMENT
+.TP
+.B WAYLAND_DISPLAY
+The compositor to connect to. Required.
+.TP
+.B XDG_CONFIG_HOME
+Where the config lives; falls back to
+.IR ~/.config .
+.TP
+.B RUST_LOG
+Overrides the log level, e.g.
+.IR RUST_LOG=debug .
+Note that this changes what is logged, not what is collected: contents are
+only gathered with
+.BR \-\-debug .
+.SH EXIT STATUS
+Non\-zero when the config is missing or unusable, when the compositor does not
+implement
+.BR ext-data-control-v1 ,
+or when the data device is taken away. A rule that throws an error is logged
+and skipped; it does not stop the daemon.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/clipmunge/config.lua
+Rules and settings. See
+.BR clipmunge (5).
+.SH SEE ALSO
+.BR clipmunge (5),
+.BR wl-copy (1),
+.BR wl-paste (1),
+.BR notify-send (1)

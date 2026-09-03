@@ -1,0 +1,13 @@
+/target
+/result
+
+# direnv's cache of the dev shell.
+.direnv/
+
+# A working config belongs in ~/.config/clipmunge, not here. Rules grow
+# internal hostnames and ticket trackers, and this is the file most likely to
+# be committed by accident. The shipped template is config.lua.example.
+/config.lua
+
+*.swp
+*~

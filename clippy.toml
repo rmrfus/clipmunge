@@ -1,0 +1,13 @@
+# Switch the [lints.clippy] restriction lints back off inside #[cfg(test)],
+# where an unwrap is the correct thing to write: a fixture that does not load
+# is a broken test, and there is nobody to hand a Result to.
+#
+# One key per lint. `allow-unwrap-in-tests` alone is not enough - the table in
+# Cargo.toml also enables `expect_used` and `panic`, and each has its own
+# switch. Without the other two, `.expect_err("...")` in a test fails CI.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+# Note this reaches #[cfg(test)] only. A file under tests/ is its own
+# compilation unit and would need #![allow(clippy::unwrap_used)] of its own.

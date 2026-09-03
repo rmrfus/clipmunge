@@ -1,0 +1,62 @@
+; Sample user unit. Copy to ~/.config/systemd/user/clipmunge.service, adjust
+; ExecStart, then:
+;
+;   systemctl --user daemon-reload
+;   systemctl --user enable --now clipmunge.service
+;
+; Nothing happens until ~/.config/clipmunge/config.lua exists; without it the
+; daemon prints the path it looked at and exits non-zero.
+
+[Unit]
+Description=Rewrite the Wayland clipboard according to Lua rules
+Documentation=man:clipmunge(1) man:clipmunge(5)
+; graphical-session.target is the portable choice. Some sway setups define
+; their own sway-session.target instead; if yours does, use that in both
+; places, or the unit starts before the compositor exists.
+PartOf=graphical-session.target
+After=graphical-session.target
+; Refuse to start outside a Wayland session rather than failing obscurely.
+ConditionEnvironment=WAYLAND_DISPLAY
+; StartLimit* belong to [Unit]; systemd ignores them in [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+; cargo install puts it in ~/.cargo/bin, which is not on the user manager's
+; PATH; a distribution package puts it in /usr/bin. Pick one. The nix package
+; rewrites this line to its own store path and ships the result inside the
+; package, so on NixOS take that unit (systemd.packages) rather than this
+; file.
+ExecStart=%h/.local/bin/clipmunge
+
+; A missing or broken config is a mistake to fix, not something to retry
+; forever. Restart=on-failure with the [Unit] start limit above means a
+; genuinely dead daemon stops and says so instead of spinning.
+Restart=on-failure
+RestartSec=3
+
+; The point of clipmunge is that rules cannot reach anything. The daemon
+; itself needs very little either: the config directory, the Wayland socket,
+; and whichever program notify_command names. Verified with these in place -
+; rewrites work and notify_command still spawns, seccomp filter and all.
+;
+; Note PrivateTmp: a config under /tmp is invisible to the service, because it
+; gets a /tmp of its own. Keep the config in ~/.config where it belongs.
+NoNewPrivileges=yes
+UMask=0077
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+; Plain Lua 5.4, no JIT, so nothing needs writable-executable pages.
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=graphical-session.target

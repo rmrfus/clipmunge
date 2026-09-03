@@ -1,0 +1,6 @@
+# Advisories only. [bans] and [licenses] are for shipping to strangers and for
+# legal review; this is a clipboard daemon on one desk.
+#
+# `cargo deny check advisories` reads the RustSec database and covers what
+# `cargo audit` does, so there is one tool here rather than two.
+[advisories]

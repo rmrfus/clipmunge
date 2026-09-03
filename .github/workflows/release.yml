@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The tag object itself, not just the commit: --notes-from-tag reads
+          # the annotation out of the local repository, and a shallow checkout
+          # does not carry it.
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # No prebuilt binary attached. clipmunge links nothing but glibc, so one
+      # built here would run in more places than a GTK tool would — but still
+      # only on a glibc at least as new as this runner's, which is exactly the
+      # kind of thing people file issues about. `nix run` builds against the
+      # consumer's own nixpkgs and cannot be wrong about it. This job proves
+      # the tag builds before the release goes out.
+      - name: Verify the tag builds
+        run: nix build
+
+      # Notes come from the annotated tag. --generate-notes produces just a
+      # "Full Changelog" link on a repository whose commits land on main
+      # without pull requests, and gh refuses to combine the two flags, so the
+      # tag message is where the release notes live. Tag with `git tag -a`.
+      - name: Publish
+        run: |
+          gh release delete "${GITHUB_REF_NAME}" --yes --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+          # No --repo here: gh refuses to combine it with --notes-from-tag,
+          # since the annotation is read locally. The checkout above is the
+          # repository context.
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-from-tag
+        env:
+          GH_TOKEN: ${{ github.token }}

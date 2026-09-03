@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Lint what is actually being committed, not the working tree: a staged hunk
+# that fails clippy would otherwise sail through because the unstaged fix is
+# still sitting on disk.
+set -Eeuo pipefail
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+git checkout-index --all --prefix="$work/"
+# Cargo needs the lockfile and the build cache; symlink target/ rather than
+# rebuilding the world on every commit.
+[[ -d target ]] && ln -s "$PWD/target" "$work/target"
+
+cd "$work"
+# Same commands as .github/workflows/ci.yml, in the same order. --locked
+# everywhere: the lockfile is committed, and a run that quietly updates it is
+# not the run CI made.
+nix develop "$OLDPWD" --command sh -c '
+  set -e
+  cargo fmt --all --check
+  cargo clippy --all-targets --locked -- -D warnings
+  cargo test --locked --quiet
+  cargo deny check advisories
+  cargo machete
+'

@@ -1,0 +1,258 @@
+.TH CLIPMUNGE 5 "2026-09-02" "clipmunge" "File Formats"
+.SH NAME
+clipmunge \- configuration file for clipmunge(1)
+.SH SYNOPSIS
+.I $XDG_CONFIG_HOME/clipmunge/config.lua
+.PP
+.RI ( ~/.config/clipmunge/config.lua
+when
+.B XDG_CONFIG_HOME
+is unset.)
+.SH DESCRIPTION
+The file is Lua. Loading it is what defines the rules: the config calls
+.B clipmunge.rule
+once per rule, in the order the rules should be tried.
+.PP
+Lua rather than a declarative format because the rules that are worth having
+are not substitutions. Canonicalising a shopping link means picking an
+identifier out of a path; deciding which of several trackers a bare identifier
+belongs to means a table lookup. As regular expressions with templates those
+are write\-only; as five lines of code they are obvious. The one rule common
+enough to be everybody's, dropping tracking parameters, is in the library
+already \- see
+.BR clipmunge.url.strip_params .
+.PP
+A missing file is an error, not an empty rule set.
+.PP
+The file is trusted: it can set
+.B notify_command
+and thereby run a program. Its
+.I rules
+are not trusted in the same way \- the interpreter never loads
+.BR io ,
+.B os
+or the C loader, so a handler cannot touch the filesystem, the network or
+another process, and it runs on an instruction and memory budget. See the
+SECURITY section of
+.BR clipmunge (1).
+.SH RULES
+.B clipmunge.rule
+takes one table:
+.PP
+.RS 4
+.EX
+clipmunge.rule {
+  name = "tickets",
+  match = [[^([A-Z]+)-(\\d+)$]],
+  when = "plain-only",
+  handler = function(kind, number)
+    return clipmunge.link("https://tracker/" .. kind .. number)
+  end,
+}
+.EE
+.RE
+.TP
+.B name
+Used in log messages. Optional but worth setting; without it a failing rule
+reports itself as \fB?\fR.
+.TP
+.B match
+A regular expression, applied to the selection's plain text. Required.
+.IP
+This is a real regular expression \- the Rust
+.B regex
+crate \- and not a Lua pattern. Alternation and bounded repetition such as
+.B \\ed{6,9}
+work. Lookaround and backreferences do not exist, which is the price of
+matching in time linear in the input; the same property means a pattern from
+somebody else's rule set cannot hang the daemon.
+.IP
+Patterns are compiled when the config loads, so mistakes surface at start\-up
+and on reload rather than on a later copy.
+.IP
+Beware that Lua's own
+.B string.match
+is still available inside handlers and takes Lua patterns, which look similar
+and are not the same language.
+.TP
+.B when
+.B "always"
+(the default) or
+.BR "plain-only" .
+With
+.BR plain-only ,
+the rule is skipped when the selection already carries a rich flavour such as
+.BR text/html .
+A browser copying a link already knows the correct href, and a guess should
+not overwrite it. Rules that clean URLs generally want the default, because
+cruft arrives from the browser in the first place.
+.TP
+.B handler
+A function receiving the capture groups of
+.B match
+as its arguments, group 1 first. A group that did not participate arrives as
+.BR nil .
+Required.
+.SH HANDLER RESULTS
+A handler returns one of:
+.TP
+.B nil
+Decline. The next rule is tried; if none matches, the clipboard is untouched.
+.TP
+a string
+Replace the plain text with it. Other flavours are dropped.
+.TP
+a table
+Each key is a MIME type and each value is the bytes for it, with two
+exceptions.
+.B text
+sets the whole text/plain family at once, and
+.B notify
+is a message for the user rather than for the clipboard.
+.PP
+Only what the table lists is published. Nothing is inherited from the incoming
+selection, deliberately: cleaning a URL in
+.B text/plain
+while passing an untouched
+.B text/html
+through would put the original tracking link back the moment somebody pasted
+into a rich editor.
+.PP
+The first rule to return something other than
+.B nil
+wins. Rules do not chain; two rules that fed each other would loop, and the
+loop guard cannot see inside a single pass.
+.SH LIBRARY
+.TP
+.BI clipmunge.link( url [, text ])
+Builds the common shape: plain text, an
+.B <a href>
+for
+.BR text/html ,
+and
+.BR chromium/x-source-url .
+\fItext\fR defaults to \fIurl\fR. Escaping is handled here.
+.TP
+.BI clipmunge.html_escape( s )
+For tables assembled by hand.
+.TP
+.BI clipmunge.url.strip_params( url "[, " patterns ])
+Removes tracking parameters from \fIurl\fR. Returns the cleaned URL and a
+list of the keys that were dropped, or
+.B nil
+when nothing matched.
+.IP
+That
+.B nil
+matters as much as the cleaning does. A rule that rewrites URLs is handed its
+own output on the next round, so answering \(lqno change\(rq for an already
+clean URL is what keeps it from looping.
+.IP
+Keys are matched case\-insensitively and a trailing
+.B *
+matches a prefix, so
+.B utm_*
+covers the whole family. Only parameter names are considered; a tracker name
+appearing in a
+.I value
+is left alone. The fragment survives, and the
+.B ?
+disappears entirely when nothing is left before it.
+.IP
+\fIpatterns\fR replaces the built\-in list rather than adding to it. To
+extend the default, start from
+.BR clipmunge.url.default_junk .
+.TP
+.B clipmunge.url.default_junk
+The built\-in list, as a table: the
+.B utm_*
+family,
+.BR fbclid ,
+.BR gclid ,
+.BR msclkid ,
+.BR igshid ,
+.BR si ,
+.BR yclid ,
+.B spm
+and their neighbours.
+.PP
+Escaping belongs to whoever builds the markup. Once a handler has returned
+bytes, the daemon cannot tell data from tags, so a table you build yourself is
+yours to escape \- otherwise clipboard content ends up injected into the
+markup somebody pastes.
+.SH SETTINGS
+.B clipmunge.settings
+takes a table of globals. An unrecognised key is a warning at load time, not a
+silent no\-op: a config that reads as if it sets something has to either set
+it or say why not.
+.TP
+.B notify_command
+The argument list used to send notifications, default
+.BR "{ \(dqnotify-send\(dq, \(dq-a\(dq, \(dqclipmunge\(dq, \(dqclipmunge\(dq, \(dq{}\(dq }" .
+The element
+.B {}
+is replaced, whole, by the rule's
+.B notify
+text.
+.IP
+It is a list, not a command line, and no shell is involved. Clipboard content
+is the least trustworthy input there is, and substituting it into a shell
+string would be a command injection with the internet as its source.
+.IP
+This setting is the one place a config reaches outside the process, and it is
+deliberate. It is also the reason to read a rule set before installing it: a
+handler cannot start a process, but the file it came in can name one here.
+.IP
+Nothing is sent unless a rule asks for it, so a config with no
+.B notify
+in any handler is silent regardless of this setting.
+.SH EXAMPLE
+.RS 4
+.EX
+clipmunge.settings {
+  notify_command = { "notify-send", "-a", "clipmunge", "clipmunge", "{}" },
+}
+
+clipmunge.rule {
+  name = "detrack",
+  match = [[^(https?://\\S+)$]],
+  handler = function(url)
+    local clean, dropped = clipmunge.url.strip_params(url)
+    -- nil means nothing matched, which is also what stops this rule from
+    -- rewriting its own output for ever.
+    if not clean then return nil end
+    local out = clipmunge.link(clean, clean)
+    out.notify = "Dropped " .. table.concat(dropped, ", ")
+    return out
+  end,
+}
+.EE
+.RE
+.SH LOOPS
+Every selection clipmunge publishes carries a private
+.B application/x-clipmunge
+flavour, and a selection carrying it is ignored. That handles the daemon
+seeing its own work.
+.PP
+It does not handle a rule whose output matches its own pattern, because that
+happens within one pass. A rule that rewrites URLs has to be idempotent, and
+the usual way is to return
+.B nil
+when there is nothing left to change, as the example does.
+.SH SPLITTING THE CONFIG
+.B require
+works and searches the config directory, so a large rule set can live in
+several files next to
+.IR config.lua .
+Changes to any of them trigger a reload, since the whole directory is watched.
+C modules cannot be loaded.
+.PP
+When the config is a symlink, both directories are searched: the one holding
+the name and the one holding the target. A dotfiles repository keeps the
+neighbouring modules beside the real file; a config manager publishes each of
+them as its own symlink in
+.IR ~/.config/clipmunge ,
+so the siblings are beside the name instead. Searching both means the same
+rule set works either way.
+.SH SEE ALSO
+.BR clipmunge (1)
