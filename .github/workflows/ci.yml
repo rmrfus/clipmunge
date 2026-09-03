@@ -42,8 +42,12 @@ jobs:
           nix develop --command groff -man -Tutf8 -ww -z man/man1/clipmunge.1
           nix develop --command groff -man -Tutf8 -ww -z man/man5/clipmunge.5
 
-      - name: Advisories
-        run: nix develop --command cargo deny check advisories
+      # Both checks named on purpose: they are independent, and
+      # `advisories` alone never reads the [sources] section. Verified by
+      # pointing allow-registry at a nonexistent index - advisories still
+      # said ok, sources failed.
+      - name: Advisories and sources
+        run: nix develop --command cargo deny check advisories sources
 
       # A dependency nobody calls is not a crash; it keeps turning up in the
       # advisory scan above and can hold rust-version above what we need.

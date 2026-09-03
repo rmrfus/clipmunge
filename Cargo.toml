@@ -22,15 +22,19 @@ exclude = [".github/"]
 
 [dependencies]
 anyhow = "1"
-# Default features kept, deliberately. clap is 347 KB of this binary and the
-# documented trim (default-features = false, then std/help/usage/derive) buys
-# back only 41 KB of it - and 23 of those 41 come from dropping `error-context`,
-# after which a bad flag reports "unexpected argument found" without saying
-# which one. Dropping `color` frees nothing at all: env_logger already pulls
-# anstream, so the dependency is paid for either way (cargo tree -i anstream).
-# 18 KB of a 3.2 MB binary is not worth a default-features = false that will
-# silently skip whatever clap adds to its defaults next.
-clap = { version = "4", features = ["derive"] }
+# clap is 347 KB of this binary, for five boolean flags. Trimmed, but only so
+# far: `error-context` stays, because without it a bad flag reports "unexpected
+# argument found" without saying which one, and that is 23 of the 41 KB the
+# full trim would return. `color` is dropped and frees nothing measurable -
+# env_logger pulls anstream regardless (cargo tree -i anstream) - so what is
+# left is `suggestions`, and the honest total is 18 KB.
+clap = { version = "4", default-features = false, features = [
+    "std",
+    "help",
+    "usage",
+    "error-context",
+    "derive",
+] }
 env_logger = "0.11"
 log = "0.4"
 # Already in the tree via mlua; a direct dep buys signal(2) for nothing. Used

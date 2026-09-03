@@ -12,7 +12,7 @@ it has. `--locked` everywhere: the lockfile is committed.
 - test: `nix develop --command cargo test --locked`
 - lint: `nix develop --command cargo clippy --all-targets --locked -- -D warnings`
 - fmt: `nix develop --command cargo fmt --all --check`
-- audit: `nix develop --command cargo deny check advisories`
+- audit: `nix develop --command cargo deny check advisories sources`
 - dead deps: `nix develop --command cargo machete`
 - man lint: `nix develop --command groff -man -Tutf8 -ww -z man/man{1,5}/clipmunge.*`
 - package: `nix build`
@@ -70,6 +70,14 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
   pick a selection up mid-rewrite; going to the socket first would leave it
   unhandled until some unrelated event arrived. Found by running the race, not
   by reading the code.
+- **`cargo deny` runs `advisories sources`, both named.** They are independent
+  checks: `advisories` alone never reads the `[sources]` section, so a repo
+  that configures `unknown-git = "deny"` and runs only `advisories` has a
+  setting nothing enforces. Verified by pointing `allow-registry` at a
+  nonexistent index - `advisories` still said ok, `sources` failed.
+- **The dtolnay/rust-toolchain pin is excluded from dependabot.** It is the
+  declared floor, not a version to keep current. Bumped to stable the MSRV job
+  stays green while testing a floor the crate never claimed.
 - **The unit is `Type=notify` and something has to send READY=1.** Under
   `Type=simple` a start "succeeds" for a daemon that is about to exit because
   no compositor answered. If the startup path grows a step that can fail, it

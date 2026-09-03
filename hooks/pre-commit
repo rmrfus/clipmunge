@@ -21,6 +21,6 @@ nix develop "$OLDPWD" --command sh -c '
   cargo fmt --all --check
   cargo clippy --all-targets --locked -- -D warnings
   cargo test --locked --quiet
-  cargo deny check advisories
+  cargo deny check advisories sources
   cargo machete
 '

@@ -9,6 +9,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Not a version to keep current. The MSRV job pins this to the declared
+      # floor deliberately; bumped to stable it stays green while testing a
+      # floor the crate never claimed, which is silent decay of the one thing
+      # that job exists to catch. Its versions are branches, not tags, so the
+      # pin has to be re-resolved by hand when rust-version moves.
+      - dependency-name: dtolnay/rust-toolchain
 
   # Cargo.lock only. The manifest uses caret ranges, so a patch release needs
   # no edit here; what needs watching is the pinned graph the flake builds.
