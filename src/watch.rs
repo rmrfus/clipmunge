@@ -154,3 +154,46 @@ impl Watcher {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_filename_watches_the_working_directory() {
+        // `--config config.lua` has a parent of "", not None, and inotify
+        // does not watch "".
+        assert_eq!(
+            candidates(Path::new("config.lua"), Path::new("config.lua")),
+            vec![PathBuf::from(".")]
+        );
+    }
+
+    #[test]
+    fn the_same_directory_twice_is_watched_once() {
+        assert_eq!(
+            candidates(
+                Path::new("/home/u/.config/clipmunge/config.lua"),
+                Path::new("/home/u/.config/clipmunge/config.lua"),
+            ),
+            vec![PathBuf::from("/home/u/.config/clipmunge")]
+        );
+    }
+
+    #[test]
+    fn given_and_resolved_directories_are_both_watched() {
+        // A symlink into a dotfiles repo: the editor writes next to the
+        // resolved file, while a config manager swaps the link next to the
+        // given name. Miss either side and one layout goes deaf.
+        assert_eq!(
+            candidates(
+                Path::new("/home/u/.config/clipmunge/config.lua"),
+                Path::new("/home/u/dotfiles/clipmunge/config.lua"),
+            ),
+            vec![
+                PathBuf::from("/home/u/.config/clipmunge"),
+                PathBuf::from("/home/u/dotfiles/clipmunge"),
+            ]
+        );
+    }
+}

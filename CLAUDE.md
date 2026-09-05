@@ -29,7 +29,7 @@ Install the hook once per clone: `git config core.hooksPath hooks`.
 - `watch.rs` — inotify on the config *directory*, with a settle delay.
 - `notify_ready.rs` — the sd_notify half of `Type=notify`, hand-rolled on std
   because the protocol is one `READY=1` datagram.
-- `main.rs` — arguments, the logger, and the poll loop that ties the four
+- `main.rs` — arguments, the logger, and the poll loop that ties the six
   together.
 
 ## This crate watches its binary size
