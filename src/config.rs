@@ -275,9 +275,14 @@ impl Rewriter for Engine {
     }
 
     fn is_secret(&self, mimes: &[String]) -> bool {
-        mimes
-            .iter()
-            .any(|m| self.settings.secret_mimes.iter().any(|s| s == m))
+        // MIME types are case-insensitive, and the guard must not depend on
+        // every source spelling the hint the same way.
+        mimes.iter().any(|m| {
+            self.settings
+                .secret_mimes
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(m))
+        })
     }
 
     fn notify(&self, text: &str) {
@@ -1089,6 +1094,15 @@ mod tests {
             "STRING",
             "SAVE_TARGETS",
         ])));
+    }
+
+    #[test]
+    fn the_secret_hint_matches_regardless_of_case() {
+        // MIME types are case-insensitive; a source spelling the hint
+        // differently must not walk past the guard.
+        let e = engine(ECHO).expect("config should load");
+        assert!(e.is_secret(&mimes(&["text/plain", "X-KDE-PasswordManagerHint"])));
+        assert!(e.is_secret(&mimes(&["text/plain", "X-KDE-PASSWORDMANAGERHINT"])));
     }
 
     #[test]

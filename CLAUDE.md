@@ -76,7 +76,9 @@ trim was once recorded here as making the binary *larger*.
   in Lua, and not as a `when` value on a rule: a handler is reached only after
   the text has been pulled out of the pipe, at which point `--debug` has
   already put it in the journal. The list is configurable, the decision is
-  not. Its log line says nothing about the content, on purpose.
+  not. Its log line says nothing about the content, on purpose. The comparison
+  is case-insensitive by design, while `get`/`has` stay byte-exact: the guard
+  must be generous, reads must be precise. Do not "unify" them.
 - **The incoming selection is the handler's FIRST argument.** Appending it
   would be silent: Lua drops a surplus argument without complaint, so old
   rules would run and be quietly wrong. It is handed over through
