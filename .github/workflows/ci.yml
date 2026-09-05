@@ -88,18 +88,27 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # v1, not the 1.88 branch. Both are SHA pins, but they put the version
-      # in different places: the 1.88 branch bakes the toolchain into its own
-      # action.yml, so a bump silently changes what is tested, and the pin has
-      # to be excluded from dependabot to stay honest. On v1 `toolchain` is
-      # `required: true` with no default - the version is an input we own, the
-      # action can be updated freely, and forgetting the input fails the step
-      # outright rather than quietly testing stable.
+      # v1, not a version branch: the 1.88 branch bakes the toolchain into its
+      # own action.yml, so an action bump would silently change what is
+      # tested. On v1 `toolchain` is an input we own.
       #
-      # It still does not follow rust-version by itself. Move both together.
+      # Read the floor out of Cargo.toml rather than repeating it here. A
+      # second copy drifts silently: raise rust-version and the job keeps
+      # passing on the old toolchain - it still exists and still builds - so
+      # it verifies a floor the crate no longer claims. An empty result fails
+      # the next step outright: `toolchain` is a required input with no
+      # default on this ref.
+      - name: Read the declared floor
+        id: floor
+        run: |
+          v=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          : "${v:?Cargo.toml declares no rust-version}"
+          echo "Cargo.toml declares rust-version $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
-          toolchain: "1.88"
+          toolchain: ${{ steps.floor.outputs.version }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Check, not build: this proves the floor compiles, and the release

@@ -100,13 +100,14 @@ trim was once recorded here as making the binary *larger*.
   that configures `unknown-git = "deny"` and runs only `advisories` has a
   setting nothing enforces. Verified by pointing `allow-registry` at a
   nonexistent index - `advisories` still said ok, `sources` failed.
-- **`rust-version` and the MSRV job's `toolchain:` input move in the same
-  commit.** Nothing enforces the pairing. Raise the floor alone and the job
-  keeps passing on the old toolchain, so it verifies a floor the crate no
-  longer claims. The pin is `dtolnay/rust-toolchain@<sha> # v1` with the
-  version as an input precisely so dependabot can keep the action current
-  without touching the toolchain - do not pin a version branch instead, that
-  puts the version back in the ref.
+- **`rust-version` lives only in Cargo.toml; the MSRV job reads it out of the
+  manifest instead of repeating it.** A second copy in the workflow drifts
+  silently: raise the floor and the job keeps passing on the old toolchain -
+  it still exists and still builds - so it verifies a floor the crate no
+  longer claims, which is the one failure that job exists to prevent. The pin
+  stays `dtolnay/rust-toolchain@<sha> # v1` with the version as an input so
+  dependabot can keep the action current without touching the toolchain - do
+  not pin a version branch instead, that puts the version back in the ref.
 - **The unit is `Type=notify` and something has to send READY=1.** Under
   `Type=simple` a start "succeeds" for a daemon that is about to exit because
   no compositor answered. If the startup path grows a step that can fail, it
