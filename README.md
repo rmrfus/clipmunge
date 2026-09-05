@@ -193,6 +193,11 @@ clipmunge does nothing until you do: there is no built-in rule set, and
 without a config it prints the path it looked at and exits. A clipboard daemon
 that starts rewriting things you never asked about is a bad neighbour.
 
+Since 0.3.0 every rule needs a `name`: a rule without one fails to load, so
+update an old config before restarting after an upgrade. A running daemon
+survives a bad reload on its old rules, but a restart has nothing to fall
+back to.
+
 ## Using it
 
 ```sh

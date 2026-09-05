@@ -1,4 +1,4 @@
-.TH CLIPMUNGE 5 "2026-09-03" "clipmunge" "File Formats"
+.TH CLIPMUNGE 5 "2026-09-04" "clipmunge" "File Formats"
 .SH NAME
 clipmunge \- configuration file for clipmunge(1)
 .SH SYNOPSIS
@@ -53,11 +53,12 @@ clipmunge.rule {
 .RE
 .TP
 .B name
-Used in log messages. Optional but worth setting; without it a failing rule
-reports itself as \fB?\fR.
+Used in log messages. Required: a rule without one fails to load, so a typo'd
+key cannot silently leave it anonymous.
 .TP
 .B match
-A regular expression, applied to the selection's plain text. Required.
+A regular expression, applied to the selection's plain text after leading and
+trailing whitespace is trimmed. Required.
 .IP
 This is a real regular expression \- the Rust
 .B regex

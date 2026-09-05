@@ -172,8 +172,8 @@ impl Engine {
             .map_err(|e| anyhow!("evaluating {}: {e}", resolved.display()))?;
 
         let mut rules = Vec::new();
-        for pair in collected.sequence_values::<Table>() {
-            rules.push(build_rule(&pair.lua()?)?);
+        for (i, pair) in collected.sequence_values::<Table>().enumerate() {
+            rules.push(build_rule(&pair.lua()?).with_context(|| format!("rule #{}", i + 1))?);
         }
         if rules.is_empty() {
             log::warn!("{} defines no rules", resolved.display());
@@ -427,7 +427,7 @@ fn build_rule(spec: &Table) -> Result<Rule> {
     let name: String = spec
         .get::<Option<String>>("name")
         .lua()?
-        .unwrap_or_else(|| "?".into());
+        .ok_or_else(|| anyhow!("rule has no `name`"))?;
     let pattern: String = spec
         .get::<Option<String>>("match")
         .lua()?
@@ -827,7 +827,7 @@ mod tests {
             r#"clipmunge.rule { name = "typo", match = [[^x$]], when = "plainonly",
                                 handler = function(_) return "x" end }"#,
         );
-        assert!(err.to_string().contains("plainonly"), "{err:#}");
+        assert!(format!("{err:#}").contains("plainonly"), "{err:#}");
     }
 
     #[test]
@@ -836,7 +836,7 @@ mod tests {
             r#"clipmunge.rule { name = "unbalanced", match = [[^(x$]],
                                 handler = function(_) return "x" end }"#,
         );
-        assert!(err.to_string().contains("unbalanced"), "{err:#}");
+        assert!(format!("{err:#}").contains("unbalanced"), "{err:#}");
     }
 
     #[test]
@@ -1140,5 +1140,20 @@ mod tests {
     fn a_rule_without_a_handler_or_a_match_fails_the_load() {
         load_err(r#"clipmunge.rule { name = "no-match", handler = function(_) return "x" end }"#);
         load_err(r#"clipmunge.rule { name = "no-handler", match = [[^x$]] }"#);
+    }
+
+    #[test]
+    fn a_rule_without_a_name_fails_the_load() {
+        // The name is what the log lines point at; an unnamed rule would log
+        // as "?" and a typo'd `naem` would sail through. Like `match` and
+        // `handler`, it is required.
+        let err =
+            load_err(r#"clipmunge.rule { match = [[^x$]], handler = function(_) return "x" end }"#);
+        let msg = format!("{err:#}");
+        assert!(msg.contains("`name`"), "{msg}");
+        // ...and it says which rule, because the name it complains about is
+        // the thing that is missing. Declaration order is the rule order, so
+        // the number is honest.
+        assert!(msg.contains("rule #1"), "{msg}");
     }
 }
