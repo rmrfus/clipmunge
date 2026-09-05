@@ -139,18 +139,64 @@ in {
 }
 ```
 
-then `systemctl --user enable --now clipmunge`. With home-manager, install the
-package into `home.packages` and write the config with
+then `systemctl --user enable --now clipmunge`.
+
+There is no home-manager module, and there does not need to be — but "install
+the package and point `xdg.configFile` at a config" leaves out the unit, and
+how the unit gets there has a consequence worth a paragraph:
 
 ```nix
-xdg.configFile."clipmunge/config.lua".source = ./clipmunge.lua;
+let
+  clipmunge = inputs.clipmunge.packages.${pkgs.stdenv.hostPlatform.system}.default;
+  unit = "${clipmunge}/lib/systemd/user/clipmunge.service";
+in {
+  home.packages = [ clipmunge ];
+  xdg.configFile."clipmunge/config.lua".source = ./clipmunge.lua;
+  xdg.configFile."systemd/user/clipmunge.service".source = unit;
+  xdg.configFile."systemd/user/sway-session.target.wants/clipmunge.service".source = unit;
+}
 ```
 
-There is no home-manager module: the unit ships with the package, and the
-config is one `xdg.configFile` line. Note that `notify_command` defaults to
-`notify-send`, which the user manager only finds if `libnotify` is on the
-session PATH — without it a rule that notifies logs `No such file or
-directory` and carries on.
+home-manager also has `systemd.user.packages`, which is the obvious thing to
+reach for. It works, and it never restarts. Everything home-manager generates
+from `systemd.user.services` and its siblings is emitted as `xdg.configFile`
+under `~/.config/systemd/user`, and activation hands `sd-switch` that one
+directory and nothing else. `systemd.user.packages` is the equivalent of
+NixOS's `systemd.packages` and deliberately lands elsewhere:
+`$XDG_DATA_HOME/systemd/user`, which `systemd.unit(5)` describes as "units of
+packages that have been installed in the home directory" and ranks below the
+configuration directory. So the diff covers the half a person declared and not
+the half a package brought: upgrade that way and the daemon you are running is
+still the old store path until you log out. The split is what each option is
+for, so the blind spot is not likely to move.
+
+Linking the unit into the config directory yourself puts it back in the half
+that gets watched. An upgrade then moves the store path in `ExecStart`, which
+is a changed file, which is a restart. The snippet names `lib/systemd/user`
+while `systemd.user.packages` reads `share/systemd/user`; both are the same
+file, because the package installs into `lib` and stdenv's
+`move-systemd-user-units` hook moves the unit to `share`, leaving
+`lib/systemd/user` as a symlink to it.
+
+The last line is the enable symlink, and it names `sway-session.target` rather
+than the `graphical-session.target` the unit's own `[Install]` section asks
+for. home-manager's sway module starts a session target of its own, and hanging
+the daemon off it is what makes it come up with the compositor and go down with
+it. That target exists only while `wayland.windowManager.sway.systemd.enable`
+is set, which it is by default — turn it off, or start sway some other way, and
+the `.wants` symlink names a target nothing ever reaches, so the daemon simply
+never starts and says nothing about why. Use `graphical-session.target.wants`
+in that case.
+
+Editing the config still needs no restart. clipmunge watches the directory it
+was given as well as the directory the config resolves to, and skips the ones
+that cannot change, so `~/.config/clipmunge` is watched while the store path
+behind the symlink is not — and a rebuild swapping that symlink is an event it
+reloads on.
+
+Note that `notify_command` defaults to `notify-send`, which the user manager
+only finds if `libnotify` is on the session PATH — without it a rule that
+notifies logs `No such file or directory` and carries on.
 
 ### From a checkout
 
