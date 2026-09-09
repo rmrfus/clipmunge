@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn reload_preserves_disabled_notifications() {
-        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.lua.example"));
+        let path = Path::new("config.lua.example");
         let mut engine = Engine::load(path).expect("example config should load");
         engine.set_notify(false);
 
