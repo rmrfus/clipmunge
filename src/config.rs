@@ -191,8 +191,11 @@ impl Engine {
         })
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// Load a replacement engine, preserving runtime notification settings.
+    pub fn reload(&self) -> Result<Self> {
+        let mut fresh = Self::load(&self.path)?;
+        fresh.notify_enabled = self.notify_enabled;
+        Ok(fresh)
     }
 
     pub fn set_notify(&mut self, yes: bool) {
@@ -700,6 +703,17 @@ mod tests {
           handler = function(_, all) return "seen:" .. all end,
         }
     "#;
+
+    #[test]
+    fn reload_preserves_disabled_notifications() {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/config.lua.example"));
+        let mut engine = Engine::load(path).expect("example config should load");
+        engine.set_notify(false);
+
+        let reloaded = engine.reload().expect("config should reload");
+        assert!(!reloaded.notify_enabled, "reload re-enabled notifications");
+        assert_eq!(reloaded.rule_names(), engine.rule_names());
+    }
 
     #[test]
     fn a_matching_rule_replaces_the_text() {

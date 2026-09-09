@@ -126,7 +126,7 @@ fn run(args: Args) -> Result<()> {
         }
         // A config with a typo in it must not disarm the daemon: complain and
         // keep running the rules that already work.
-        match Engine::load(engine.path()) {
+        match engine.reload() {
             Ok(fresh) => {
                 log::info!(
                     "reloaded {} rule(s): {}",
