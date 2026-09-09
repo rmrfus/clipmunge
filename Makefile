@@ -1,33 +1,12 @@
-# Installing clipmunge on a box without nix.
-#
-# `cargo install` copies binaries and nothing else — no man pages, no unit, no
-# example config — so the rest needs a rule of its own. Everything here honours
-# the usual PREFIX and DESTDIR, which is the language an AUR or Debian packager
-# already speaks. On nix, use the flake instead; the package installs all of
-# this and rewrites the unit's ExecStart to the store path.
-#
-#   make && sudo make install                 # /usr/local
-#   make && make install PREFIX="$HOME/.local"
-#   make install DESTDIR="$pkgdir" PREFIX=/usr
+# Build and install the binary, docs and user service. See docs/install.md.
 
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 MANDIR  ?= $(PREFIX)/share/man
 DOCDIR  ?= $(PREFIX)/share/doc/clipmunge
 
-# Not $(PREFIX)/lib/systemd/user. systemd looks in different places depending
-# on who installed the unit, and the two are separate namespaces rather than
-# one path with a prefix swapped — systemd.unit(5), Table 2:
-#
-#   /usr/lib/systemd/user         distribution package manager
-#   /usr/local/lib/systemd/user   administrator
-#   ~/.local/share/systemd/user   "packages installed in the home directory"
-#
-# There is no ~/.local/lib/systemd/user on that list, so the obvious template
-# puts the unit somewhere `systemctl --user enable` will never look, and says
-# nothing while doing it. /usr/share/systemd/user is searched as well, but only
-# through XDG_DATA_DIRS, which anybody may set to something else; a packager
-# wants the unconditional lib path.
+# systemd searches share/systemd/user for home installs and
+# lib/systemd/user under /usr and /usr/local; see systemd.unit(5).
 ifeq ($(filter /usr%,$(PREFIX)),)
 UNITDIR ?= $(PREFIX)/share/systemd/user
 else
@@ -46,18 +25,13 @@ all: build
 build:
 	$(CARGO) build --release --locked
 
-# Deliberately not dependent on `build`: this is the target run under sudo, and
-# rebuilding as root leaves target/ owned by root for the rest of time.
+# Keep build separate so sudo make install does not compile as root.
 install:
 	@test -x '$(BIN)' || { echo 'clipmunge: $(BIN) is missing — run `make` first' >&2; exit 1; }
 	$(INSTALL) -Dm755 $(BIN)                   $(DESTDIR)$(BINDIR)/clipmunge
 	$(INSTALL) -Dm644 man/man1/clipmunge.1     $(DESTDIR)$(MANDIR)/man1/clipmunge.1
 	$(INSTALL) -Dm644 man/man5/clipmunge.5     $(DESTDIR)$(MANDIR)/man5/clipmunge.5
 	$(INSTALL) -Dm644 config.lua.example       $(DESTDIR)$(DOCDIR)/config.lua.example
-	@# ExecStart is rewritten rather than left for the reader to notice. The
-	@# shipped unit says %h/.local/bin/clipmunge, which is wrong for every
-	@# PREFIX but one, and a unit that points at nothing fails at enable time
-	@# with an error about a path nobody typed.
 	$(INSTALL) -d $(DESTDIR)$(UNITDIR)
 	sed -e 's|^ExecStart=.*|ExecStart=$(BINDIR)/clipmunge|' \
 	    systemd/clipmunge.service > $(DESTDIR)$(UNITDIR)/clipmunge.service

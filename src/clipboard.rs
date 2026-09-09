@@ -1,11 +1,5 @@
-//! The ext-data-control-v1 plumbing: watch the selection, read it, put a new
-//! one back.
-//!
-//! This protocol is what makes clipmunge possible at all. A data source may
-//! advertise several MIME types and answer each `send` with different bytes,
-//! so the plain text can stay a bare token while text/html carries a link.
-//! wl-copy cannot do that - it serves the same buffer for every type it
-//! advertises - and upstream has declined twice (wl-clipboard#71, #248).
+//! Read and rewrite the clipboard over ext-data-control-v1.
+//! Each advertised MIME type can serve its own payload.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -26,58 +20,35 @@ use wayland_protocols::ext::data_control::v1::client::{
 
 use crate::selection::{MARKER_MIME, RICH_MIMES, Selection, TEXT_MIMES, dump};
 
-/// Refuse to slurp a selection larger than this. Text rules do not need more,
-/// and an unbounded read is a way for any application to make the daemon eat
-/// all of memory. Image flavours will need their own, much larger, budget.
+/// Maximum bytes read per flavour.
 const READ_LIMIT: usize = 256 * 1024;
-/// Per flavour, and then a ceiling on the lot. The event loop is blocked for
-/// the whole of a read - nothing else is dispatched - so a selection that
-/// advertises a dozen flavours must not be able to buy a dozen timeouts.
+/// Per-flavour and total read deadlines. The event loop cannot dispatch during
+/// a read, so additional flavours must not extend the total budget.
 const READ_TIMEOUT: Duration = Duration::from_millis(500);
 const READ_BUDGET: Duration = Duration::from_millis(1000);
-/// How long to keep pushing bytes at a client that asked for them. See
-/// `send_payload`; the number only matters when something is wrong.
+/// Stop waiting for pipe capacity after this interval.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Flavours worth the pipe round trip.
-///
-/// A LibreOffice selection advertises a dozen private types, some of them
-/// megabytes, and no rule can look at any of them - a handler is handed the
-/// `Selection` this builds, so what is not read here does not exist further
-/// up. Reading the rest would be pure latency on every copy.
-///
-/// The rich types are in here and not just the text family because a handler
-/// can ask for them: `incoming:get("text/html")` returns what a browser
-/// actually sent rather than a guess made from the plain text. Adding a
-/// flavour to `RICH_MIMES` is therefore an API change, not an optimisation.
+/// MIME types exposed to handlers. Skip other types to avoid unnecessary reads.
+/// Adding a rich type changes the data available through `incoming:get`.
 fn worth_reading(mime: &str) -> bool {
     TEXT_MIMES.contains(&mime) || RICH_MIMES.contains(&mime)
 }
 
-/// What a rule produced: the new selection, and optionally something to tell
-/// the user about it.
+/// Replacement selection and optional notification.
 pub struct Rewrite {
     pub selection: Selection,
     pub notify: Option<String>,
 }
 
-/// What a rule engine has to provide. Returning None means "not mine, leave
-/// the clipboard alone".
+/// Return `None` to leave the clipboard unchanged.
 pub trait Rewriter {
     fn rewrite(&mut self, incoming: &Selection) -> Option<Rewrite>;
 
-    /// Called only after the rewrite actually reached the clipboard. Notifying
-    /// about a result we then dropped would be a lie, and results do get
-    /// dropped when the clipboard moves on mid-rule.
+    /// Notify only after publishing; stale rewrites may be discarded.
     fn notify(&self, _text: &str) {}
 
-    /// Whether an offer advertising these flavours is one to leave alone.
-    ///
-    /// Asked of the *announced* list, because the answer has to arrive before
-    /// anything is read: once the bytes are in the process they are in the
-    /// journal too, for anybody running with `--debug`. That is the whole
-    /// point of the guard, so it cannot be a rule's decision - a handler is
-    /// only reached after the text has already been pulled out of the pipe.
+    /// Check the announced MIME list before reading or logging any payload.
     fn is_secret(&self, _mimes: &[String]) -> bool {
         false
     }
@@ -87,8 +58,7 @@ pub struct Clipboard {
     conn: Connection,
     queue: EventQueue<State>,
     state: State,
-    /// Log what went in and what came out, in full. Off unless asked for:
-    /// this writes the clipboard to the log, passwords included.
+    /// Include clipboard contents in diagnostics. Enabled only by --debug.
     log_contents: bool,
 }
 
@@ -98,22 +68,17 @@ struct State {
     seat: Option<wl_seat::WlSeat>,
     device: Option<ExtDataControlDeviceV1>,
 
-    /// Offers announced but not yet claimed by a `selection` event, keyed by
-    /// object id: the proxy, and the MIME types named for it so far. The proxy
-    /// is kept because an offer we drop on the floor has to be destroyed -
-    /// see the `Selection` arm.
+    /// Unclaimed offers, keyed by object ID, with their announced MIME types.
+    /// Discarded offers need an explicit protocol destructor.
     pending: HashMap<u32, (ExtDataControlOfferV1, Vec<String>)>,
     /// The offer the compositor last told us is the selection.
     current: Option<(ExtDataControlOfferV1, Vec<String>)>,
 
-    /// Our live source, kept alive so the compositor can still call back for
-    /// reads, plus the bytes to answer those calls with.
+    /// Keep the source and its payloads alive for paste requests.
     source: Option<ExtDataControlSourceV1>,
     payload: Selection,
 
-    /// Bumped on every selection event. A rewrite computed for generation N is
-    /// dropped if the clipboard has moved on: today's text rules are
-    /// microseconds, but resizing an image will not be.
+    /// Incremented on each selection event to detect stale rewrites.
     generation: u64,
 
     got_selection: bool,
@@ -158,12 +123,8 @@ impl Clipboard {
         self.log_contents = yes;
     }
 
-    /// One turn of the loop: wait for the compositor or for any of `extra` to
-    /// become readable, then act on whatever the compositor said.
-    ///
-    /// Returns the readiness of each `extra` fd, so the caller can own its own
-    /// wakeup sources (the config watcher today, a signal fd tomorrow) without
-    /// this module knowing about them.
+    /// Dispatch compositor events and return readiness for each caller-owned
+    /// `extra` fd, such as the config watcher.
     pub fn tick(
         &mut self,
         rewriter: &mut dyn Rewriter,
@@ -173,15 +134,12 @@ impl Clipboard {
         let mut ready = vec![false; extra.len()];
         self.queue.flush()?;
 
-        // A selection picked up by `drain_events` during the previous rewrite
-        // is work already in hand. Sleeping on the socket before dealing with
-        // it would leave the clipboard unrewritten until something unrelated
-        // happened to arrive, which on a quiet desktop is a long time.
+        // Handle selections found by `drain_events` before sleeping again;
+        // there may be no further socket event to wake us.
         let work_in_hand = self.state.got_selection;
 
-        // Only sleep when there is nothing already queued: prepare_read hands
-        // back None precisely when events are pending, and blocking then would
-        // deadlock against events we already hold.
+        // prepare_read returns None when events are already queued.
+        // Dispatch them instead of blocking on the socket.
         if !work_in_hand && self.queue.dispatch_pending(&mut self.state)? == 0 {
             match self.queue.prepare_read() {
                 Some(guard) => {
@@ -235,20 +193,14 @@ impl Clipboard {
             };
             let generation = self.state.generation;
 
-            // The loop guard has to fire on the announced MIME list, before a
-            // single byte is read. Reading our own offer would deadlock: the
-            // compositor delivers the matching `send` to this very queue,
-            // which we are not dispatching while blocked on the pipe, so every
-            // flavour costs a full read timeout before it gives up.
+            // Check the marker before reading. Our own offer needs a send event on
+            // this queue, which cannot dispatch while blocked on the read pipe.
             if mimes.iter().any(|m| m == MARKER_MIME) {
                 log::debug!("skipping our own selection");
                 return Ok(());
             }
 
-            // Same place, same reason: on the announced list, before a byte is
-            // read. Deliberately says nothing about what was on the clipboard,
-            // because the one thing this guard exists to prevent is that
-            // string reaching the log.
+            // Skip secret offers before reading so their content cannot enter diagnostics.
             if rewriter.is_secret(&mimes) {
                 log::info!("selection marked secret by its owner, left alone");
                 return Ok(());
@@ -280,12 +232,8 @@ impl Clipboard {
                     dump(&outgoing)
                 );
             }
-            // Ask the compositor whether anything happened while we were
-            // busy, then check. Without the drain this comparison could never
-            // fail: nothing else dispatches between taking `generation` and
-            // getting here, so `state.generation` was frozen and the guard was
-            // a comment. Reading a selection is allowed a whole second, which
-            // is plenty of time to hit ctrl-c again.
+            // Drain events before comparing generations; otherwise the counter has
+            // not changed since the read began and cannot detect a stale rewrite.
             self.drain_events()?;
             if self.state.generation != generation {
                 log::debug!("clipboard moved on while rewriting, dropping result");
@@ -301,8 +249,7 @@ impl Clipboard {
         }
     }
 
-    /// Pull in whatever the compositor has already sent, without waiting for
-    /// anything. Same shape as the sleep in `tick`, with a zero timeout.
+    /// Dispatch queued events, or read available socket events with a zero-timeout poll.
     fn drain_events(&mut self) -> Result<()> {
         if self.queue.dispatch_pending(&mut self.state)? > 0 {
             return Ok(());
@@ -413,8 +360,8 @@ impl Clipboard {
         self.conn.flush()?;
 
         log::info!("published {sel:?}");
-        // Held so the compositor can still ask us for the bytes; dropping the
-        // proxy would take the selection down with it.
+        // Retain the source identity for cancellation and payloads for paste requests.
+        // Dropping a proxy does not destroy the protocol object.
         self.state.payload = sel;
         self.state.source = Some(source);
         Ok(())
@@ -468,19 +415,13 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for State {
             ext_data_control_device_v1::Event::Selection { id } => {
                 state.generation += 1;
                 state.got_selection = true;
-                // "The client must destroy the previous selection
-                // ext_data_control_offer, if any, upon receiving this event."
-                // wayland-rs does not send destructors when a proxy is
-                // dropped, so an offer we merely forget stays alive in the
-                // compositor until the connection closes - one per copy, for
-                // the life of the session.
+                // The protocol requires destroying the previous selection offer.
+                // Dropping a wayland-rs proxy does not send its destructor.
                 if let Some((old, _)) = state.current.take() {
                     old.destroy();
                 }
                 state.current = id.map(|offer| {
-                    // Taken out of `pending` without destroying: this is the
-                    // same object, and destroying it twice is a protocol
-                    // error.
+                    // Remove the same object from pending without destroying it twice.
                     let mimes = state
                         .pending
                         .remove(&offer.id().protocol_id())
@@ -493,11 +434,7 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for State {
                     offer.destroy();
                 }
             }
-            // We do not touch PRIMARY: rewriting every mouse selection would
-            // be unbearable. Kept explicit so it is a decision, not a gap.
-            //
-            // Ignoring it still costs an object per mouse drag, though, so the
-            // offer has to go back even though we never read it.
+            // PRIMARY is ignored, but its offer still needs to be destroyed.
             ext_data_control_device_v1::Event::PrimarySelection { id: Some(offer) } => {
                 state.pending.remove(&offer.id().protocol_id());
                 offer.destroy();
@@ -564,26 +501,14 @@ impl Dispatch<ExtDataControlSourceV1, ()> for State {
     }
 }
 
-/// Hand a flavour to a pasting client without betting the daemon on it.
-///
-/// The pipe belongs to whoever is pasting, its buffer is 64 KB, and a rewrite
-/// is allowed to be four times that. A plain blocking `write_all` here would
-/// therefore stall inside the event dispatch until the client got round to
-/// reading, with the whole clipboard stopped behind it - and a client that
-/// asks for a flavour and then wanders off would stop it for good.
-///
-/// So: non-blocking, poll for writability, and a deadline. A client that has
-/// not drained 64 KB in two seconds is broken, and gets a short read instead
-/// of a hostage.
-///
-/// Walking away mid-read is fine and normal; that closes the pipe and gives us
-/// EPIPE, which is the caller's debug line and nobody's problem.
+/// Write without blocking on the pipe, polling for capacity when full.
+/// The deadline limits capacity waits, not total time if writes keep succeeding.
+/// Event dispatch waits for this function. The caller logs EPIPE if the reader closes.
 fn send_payload(fd: OwnedFd, data: &[u8]) -> Result<()> {
     send_payload_until(fd, data, Instant::now() + WRITE_TIMEOUT)
 }
 
-/// The body of `send_payload`, with the deadline handed in so a test can use
-/// one that does not take two seconds to arrive.
+/// Send with a configurable deadline for tests.
 fn send_payload_until(fd: OwnedFd, data: &[u8], deadline: Instant) -> Result<()> {
     use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 
@@ -623,10 +548,7 @@ delegate_noop!(State: ignore ExtDataControlManagerV1);
 mod tests {
     use super::*;
 
-    /// A pipe holds 64 KB. Publishing up to `READ_LIMIT` at a client that is
-    /// not reading used to park the daemon inside its own event dispatch with
-    /// the clipboard stopped behind it, for as long as the client felt like
-    /// it. It has to come back instead.
+    /// A full pipe with its reader still open must time out.
     #[test]
     fn a_reader_that_never_reads_does_not_wedge_the_writer() {
         let (read_fd, write_fd) = pipe_with(PipeFlags::CLOEXEC).unwrap();

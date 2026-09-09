@@ -37,20 +37,16 @@ struct Args {
     #[arg(long)]
     no_notify: bool,
 
-    /// Log every rewrite, before and after
+    /// Log clipboard text previews and rewrites
     #[arg(short, long)]
     debug: bool,
 }
 
-/// Built at run time rather than written into the derive, because the useful
-/// half is the config path this machine would actually use - the answer to
-/// "it does nothing, where do I put the rules" without a second command.
+/// Build help at runtime to include the default config path.
 fn after_help() -> String {
     format!(
         "Default config: {}\n\n\
-         --debug WRITES CLIPBOARD CONTENTS TO THE LOG. Everything you copy while\n\
-         it is on ends up in the journal, including whatever a password manager\n\
-         puts there. Use it to work on a rule, not as a permanent setting.\n\n\
+         --debug logs clipboard text previews, which may include passwords.\n\n\
          RUST_LOG overrides the log level either way.",
         Engine::default_path()
             .map(|p| p.display().to_string())
@@ -64,18 +60,13 @@ fn run(args: Args) -> Result<()> {
         None => Engine::default_path().context("neither XDG_CONFIG_HOME nor HOME is set")?,
     };
     if !path.exists() {
-        // Doing nothing quietly is worse than not starting: a clipboard daemon
-        // that rewrites nothing looks exactly like a broken one.
         bail!(
             "no config at {}\n\
              clipmunge does nothing until you give it rules; see config.lua.example",
             path.display()
         );
     }
-    // The name the user gave is what everything keys off from here: a config
-    // manager republishes the file and moves the symlink, so resolving once at
-    // startup would pin the daemon to the version it happened to start with.
-    // Engine::load resolves on every load for the same reason.
+    // Keep the given path so reloads follow replaced config symlinks.
     let resolved = path
         .canonicalize()
         .with_context(|| format!("resolving {}", path.display()))?;
@@ -108,8 +99,7 @@ fn run(args: Args) -> Result<()> {
     clipboard.log_contents(args.debug);
     engine.set_notify(!args.no_notify);
     log::info!("watching the clipboard");
-    // Everything that can refuse to start has now been tried: the config
-    // parsed, the compositor answered, the protocol is there.
+    // All fallible startup steps must precede the readiness notification.
     notify_ready::ready();
 
     loop {
@@ -124,8 +114,7 @@ fn run(args: Args) -> Result<()> {
         if !w.take_settled() {
             continue;
         }
-        // A config with a typo in it must not disarm the daemon: complain and
-        // keep running the rules that already work.
+        // Keep the previous rules if the new config fails to load.
         match engine.reload() {
             Ok(fresh) => {
                 log::info!(
@@ -140,15 +129,8 @@ fn run(args: Args) -> Result<()> {
     }
 }
 
-/// Let the kernel reap the notify children.
-///
-/// The daemon never looks at a notification's exit status, so the alternative
-/// is keeping a list of `Child` handles alive to call `try_wait` on later -
-/// bookkeeping for a number nobody reads. SIG_IGN on SIGCHLD is the POSIX way
-/// of saying that, and it is one call at startup instead of a leak per copy.
-///
-/// Nothing here waits on a child, so the usual objection - that SIG_IGN makes
-/// `wait` fail with ECHILD - costs us nothing.
+/// Let the kernel reap notification children via SIGCHLD = SIG_IGN.
+/// No code waits on children; wait calls would fail with ECHILD.
 fn ignore_child_signals() {
     // SAFETY: signal(2) with SIG_IGN on SIGCHLD, before any thread or child
     // exists. No handler runs, so there is no async-signal-safety to get
@@ -159,10 +141,8 @@ fn ignore_child_signals() {
 }
 
 fn main() -> ExitCode {
-    // Arguments before the logger, because --debug decides its level. Built
-    // through the command rather than Args::parse() so after_help can name
-    // this machine's config path; a usage error still leaves through clap,
-    // which exits 2 before anything of ours is on the stack.
+    // Parse arguments before configuring the logger because --debug sets its level.
+    // Build the command explicitly to add the default config path to help.
     let matches = Args::command().after_help(after_help()).get_matches();
     let args = match Args::from_arg_matches(&matches) {
         Ok(args) => args,
@@ -174,10 +154,7 @@ fn main() -> ExitCode {
     let default = if args.debug { "debug" } else { "info" };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default)).init();
     if args.debug {
-        log::warn!(
-            "--debug is on: every clipboard selection is written to the log in full, \
-             including anything a password manager copies"
-        );
+        log::warn!("--debug is on: clipboard text previews may be logged, including passwords");
     }
 
     match run(args) {

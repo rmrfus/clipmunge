@@ -2,14 +2,7 @@
 name = "clipmunge"
 version = "0.3.0"
 edition = "2024"
-# mlua-sys 0.12 refuses to build below 1.88, and `cargo install --locked`
-# resolves the whole graph, so this is the real floor. Claiming 1.85 was a lie
-# that only surfaced once CI started checking it: the local toolchain is 1.95,
-# so every build here was green regardless.
-#
-# It is now our own floor as well. clippy gates its suggestions on this key,
-# and raising it turned on the let-chain in clipboard.rs that it had been
-# holding back - so lowering the number again would not compile.
+# Required by mlua-sys and our let-chains.
 rust-version = "1.88"
 description = "Rule-driven Wayland clipboard rewriter that can put different content in different MIME types"
 license = "MIT"
@@ -22,28 +15,14 @@ exclude = [".github/"]
 
 [dependencies]
 anyhow = "1"
-# Default features, measured rather than assumed. clap is 347 KB of this
-# binary, but trimming it here is a net loss: keeping `error-context` and
-# `suggestions` - and both earn their keep, one names the offending flag and
-# the other prints "a similar argument exists" plus the real Usage line -
-# leaves only `color` to drop, and that frees nothing because env_logger keeps
-# anstream in the graph regardless (cargo tree -i anstream). Measured at
-# 3211000 bytes trimmed against 3211320 with defaults - 320 bytes, for a
-# default-features = false that silently opts out of whatever clap adds next.
-# (Dropping `suggestions` as well would be 18280, which is what that feature
-# costs; it is not free to drop, see above.) All three measured on the same
-# tree: comparing against a figure from an older commit is how the first pass
-# here concluded the trim made the binary bigger.
+# Disabling color saved only 320 bytes: env_logger also uses anstream.
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
-# Already in the tree via mlua; a direct dep buys signal(2) for nothing. Used
-# in exactly one place, to hand the notify children to the kernel to reap.
+# Reap notification children via SIGCHLD.
 libc = "0.2"
-# Not really a new dependency: wayland-client already pulls rustix in.
 rustix = { version = "1", features = ["pipe", "event", "fs", "std"] }
-# Unicode is trimmed to what clipboard rules actually need: \d, \w, \s and case
-# folding. Putting \p{Script} back costs about 250 KB.
+# Keep Unicode Perl classes and case folding; omit script classes to reduce size.
 regex = { version = "1", default-features = false, features = [
     "std",
     "perf",
@@ -55,14 +34,8 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
 
-# The no-panic policy, machine-checked. These live in clippy's `restriction`
-# group, which is allow-by-default and is not switched on by `clippy::all` or
-# `pedantic` - each has to be named. `warn` plus the `-D warnings` already in
-# CI and the pre-commit hook is what makes them fail.
-#
-# The table rather than a crate-level `#![deny]`: the attribute is crate-wide
-# and would poison #[cfg(test)] too, where an unwrap is the right thing to
-# write. clippy.toml turns it back off there.
+# Restriction lints need explicit opt-in. CI promotes warnings to errors;
+# clippy.toml permits unwrap, expect and panic in tests.
 [lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
@@ -71,10 +44,7 @@ unreachable = "warn"
 todo = "warn"
 unimplemented = "warn"
 dbg_macro = "warn"
-# The four below are what stop the rest of CLAUDE.md being prose an agent can
-# violate with a green build: `exit` enforces `fn main() -> ExitCode`,
-# `print_stdout` the "diagnostics go to stderr" rule, and the two unsafe ones
-# the SAFETY-comment rule.
+# Disallow direct process exits and stdout prints; require documented unsafe blocks.
 exit = "warn"
 print_stdout = "warn"
 undocumented_unsafe_blocks = "warn"
@@ -83,8 +53,6 @@ multiple_unsafe_ops_per_block = "warn"
 [profile.release]
 lto = true
 strip = true
-# Measured, not folklore: 191 KB on a 3.2 MB binary (3211 KB with it, 3402 KB
-# without). The build-time and runtime claims for this setting are vendor-blog
-# grade; the size effect is the reason it is here, and this crate counts bytes
-# - see the table in DESIGN.md.
+# Measured saving: 191 KB (3211 vs 3402 KB). Chosen for size;
+# build-time/runtime effects were not measured. See DESIGN.md.
 codegen-units = 1

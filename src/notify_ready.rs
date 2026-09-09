@@ -1,25 +1,11 @@
-//! Telling systemd the daemon is actually up.
-//!
-//! `Type=simple` calls a unit started the moment the process forks, so
-//! everything ordered after it races the part that matters: binding to the
-//! compositor and loading the rules. With `Type=notify` the unit is not
-//! started until this module says so, which also turns "no compositor" from a
-//! unit that started and then died into a start that failed and said why.
-//!
-//! Hand-rolled rather than a crate. The protocol is one datagram of `READY=1`
-//! to the socket named in `$NOTIFY_SOCKET`; std has had abstract-namespace
-//! Unix addresses since 1.70, so there is nothing left for a dependency to do.
-//! See sd_notify(3) for the wire format.
+//! Send systemd readiness after config loading and compositor setup.
+//! The sd_notify(3) protocol uses one datagram sent to NOTIFY_SOCKET.
 
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 
-/// Send `READY=1`, or do nothing at all when not running under systemd.
-///
-/// Failure here is never fatal: the daemon works fine outside systemd, and a
-/// notification that cannot be delivered says something about the supervisor,
-/// not about the clipboard.
+/// Send READY=1 if NOTIFY_SOCKET is set. Log delivery errors at debug level.
 pub fn ready() {
     let Some(path) = std::env::var_os("NOTIFY_SOCKET") else {
         return;
@@ -30,10 +16,7 @@ pub fn ready() {
 }
 
 fn send(socket: &[u8], msg: &[u8]) -> std::io::Result<()> {
-    // A leading '@' means the abstract namespace, where the name is the bytes
-    // after it - not a filesystem path, so joining or canonicalising it is
-    // wrong. systemd uses this form for system units; user units usually get
-    // a real path under $XDG_RUNTIME_DIR.
+    // A leading '@' denotes an abstract Unix socket; it is not part of the name.
     let addr = match socket.split_first() {
         Some((b'@', name)) => SocketAddr::from_abstract_name(name)?,
         _ => SocketAddr::from_pathname(std::path::Path::new(
@@ -54,11 +37,7 @@ fn send(socket: &[u8], msg: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    /// The abstract-namespace form, which is what systemd hands a system unit.
-    /// Worth a test of its own because the leading '@' is a namespace marker
-    /// and not part of the name: treating the whole string as a path binds
-    /// nothing and fails silently, which is the failure mode this module was
-    /// written to avoid.
+    /// Check that '@' selects the abstract namespace and is excluded from the name.
     #[test]
     fn ready_reaches_an_abstract_socket() {
         let name = format!("clipmunge-test-{}", std::process::id());

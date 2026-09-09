@@ -1,12 +1,67 @@
 # clipmunge
 
 [![CI](https://github.com/rmrfus/clipmunge/actions/workflows/ci.yml/badge.svg)](https://github.com/rmrfus/clipmunge/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/rmrfus/clipmunge?logo=github)](https://github.com/rmrfus/clipmunge/releases/latest)
+[![Release](https://img.shields.io/github/v/release/rmrfus/clipmunge)](https://github.com/rmrfus/clipmunge/releases/latest)
 [![License](https://img.shields.io/github/license/rmrfus/clipmunge)](LICENSE)
 
-Rewrites the Wayland clipboard as you copy, according to rules you write in
-Lua. Copy a bare ticket number and paste a link; copy a URL out of a phone app
-and paste it without the tracking.
+clipmunge rewrites your Wayland clipboard using rules you write in Lua.
+Use it to remove tracking parameters from copied URLs, shorten shopping links,
+or turn ticket numbers into links.
+
+A rule can provide both plain text and HTML: copy `BUG-4471`, paste `BUG-4471`
+into a terminal, or paste a clickable link into an editor that accepts HTML.
+
+## Requirements
+
+A Wayland compositor with `ext-data-control-v1` support, such as sway 1.11+.
+The older `wlr-data-control` protocol and X11 are not supported.
+Currently, rules process text and rich text; images and the PRIMARY selection
+are not supported.
+
+## Install
+
+With Nix:
+
+```sh
+nix profile install github:rmrfus/clipmunge
+```
+
+Or build from source with Rust 1.88+ and a C compiler for the bundled Lua:
+
+```sh
+git clone https://github.com/rmrfus/clipmunge
+cd clipmunge
+make
+make install PREFIX="$HOME/.local"
+```
+
+Both methods install the binary, man pages, example config and a systemd user
+service. Ensure the installation's `bin` directory is on your `PATH`.
+See [installation details](docs/install.md) for NixOS, Home Manager,
+system-wide installation and `cargo install`.
+
+## Configure
+
+Create `~/.config/clipmunge/config.lua` (or
+`$XDG_CONFIG_HOME/clipmunge/config.lua` if you use a custom config directory).
+For example, this rule removes common tracking parameters from URLs:
+
+```lua
+clipmunge.rule {
+  name = "detrack",
+  match = [[^(https?://\S+)$]],
+  handler = function(_, url)
+    local clean = clipmunge.url.strip_params(url)
+    if not clean then return nil end
+    return clipmunge.link(clean)
+  end,
+}
+```
+
+Copy `https://example.com/page?utm_source=newsletter` and paste
+`https://example.com/page`.
+
+To turn ticket numbers into links, add a rule with your tracker URL:
 
 ```lua
 clipmunge.rule {
@@ -20,310 +75,54 @@ clipmunge.rule {
 }
 ```
 
-Copying `BUG-4471` now puts this on the clipboard:
+`plain-only` skips a rule if any rich-text MIME payload was read successfully.
+Rules run in declaration order;
+the first to return a replacement wins. Returning `nil` tries the next rule.
+There are no built-in rules, and clipmunge requires a config file to start.
 
-| flavour                 | content                                                       |
-| ----------------------- | ------------------------------------------------------------- |
-| `text/plain`            | `BUG-4471`                                                    |
-| `text/html`             | `<a href="https://tracker.example.com/BUG-4471">BUG-4471</a>` |
-| `chromium/x-source-url` | `https://tracker.example.com/BUG-4471`                        |
+[config.lua.example](config.lua.example) has more examples.
+`man 5 clipmunge` documents the full Lua API.
 
-The shell still gets a bare identifier. Workplace, Quip, Slack and mail get a
-link. One copy, no decision to make at the time.
-
-## Why this needs its own tool
-
-Serving **different bytes for different MIME types of one selection** is the
-whole point, and it is the one thing the usual tools cannot do. `wl-copy`
-hands out the same buffer for everything it advertises, so it cannot make a
-selection whose plain text and HTML disagree; the requests to change that have
-been open since 2021 (wl-clipboard#71, #248).
-
-The `ext-data-control-v1` protocol answers each MIME request separately, which
-is exactly the shape needed. clipmunge speaks it directly.
-
-## What a rule can and cannot do
-
-**Your config is trusted, the way your shell rc file is.** It can set
-`notify_command`, and that runs a program with rule output as an argument —
-which is the point of the setting, and also the reason a rule set from a
-stranger is not something to paste in unread.
-
-What the interpreter hands a *rule* is much less. `io`, `os`, `dofile`,
-`load`, `coroutine` and the C module loader are **never loaded** — not
-deleted afterwards, never loaded — and `package.path` points at the config
-directory alone. At copy time a rule can compute and nothing else: it cannot
-open a file, reach the network, or start a process.
-
-That distinction is worth the words. Deleting the globals is what an earlier
-version did, and it does not work: `luaL_openlibs` also files every library
-under `package.loaded`, which is the first place `require` looks, so
-`require("os").execute` walks straight past a nil `os`. Not loading the
-library leaves nothing to find.
-
-A handler is a pure function from selection to selection, on a budget: about
-ten million VM instructions and 64 MB. That is thousands of times what a real
-rule uses, and it means a `while true do end` costs one logged error rather
-than a clipboard that stops working until you notice.
-
-A selection whose owner marks it secret — the `x-kde-passwordManagerHint`
-flavour — is skipped whole: not rewritten, not read, and so not logged even
-under `--debug`. The check is on the announced flavour list, before a byte is
-fetched, because after that the content is already in the process. The list is
-a setting:
-
-```lua
-clipmunge.settings { secret_mimes = { "x-kde-passwordManagerHint" } }
-```
-
-Take this for exactly what it is worth. The hint is opt-in for whoever owns
-the selection and most owners never send it — on Firefox 154, copying from
-`about:logins` sets it, copying out of a password field does not, and the
-1Password browser extension does not. **What actually keeps a password out of
-a rewrite is that no rule matches it.** The shipped rules want a URL or a bare
-identifier; a password is neither. Write `^(.*)$` and you have opted out of
-that protection yourself.
-
-A handler can *describe* a notification by returning a `notify` field; the
-daemon decides whether to send it, truncates it to 200 characters, and sends
-at most one per rewrite. `--no-notify` switches the whole mechanism off.
-
-## Install
-
-### Requirements
-
-Rust 1.88 or newer to build from source. That floor arrives with mlua, and
-clipmunge now uses a let-chain of its own, so it is real on both counts.
-
-A compositor that implements **`ext-data-control-v1`** — sway 1.11 or newer,
-or equivalently recent wlroots. clipmunge does not fall back to the older
-`wlr-data-control`, and will not: the whole design leans on the standard
-protocol, and carrying two of them to reach releases that are already being
-superseded is not a trade worth making.
-
-Check with `sway --version`. At the time of writing:
-
-| distribution             | sway   | works |
-| ------------------------ | ------ | ----- |
-| Arch, Fedora 42+         | 1.11+  | yes   |
-| Debian forky / sid       | 1.12   | yes   |
-| Ubuntu 26.04 (resolute)  | 1.11   | yes   |
-| Debian 13 (trixie)       | 1.10.1 | no    |
-| Ubuntu 25.04 / 25.10     | 1.10.1 | no    |
-| Ubuntu 24.04 LTS (noble) | 1.9    | no    |
-
-On an unsupported compositor clipmunge says so and exits rather than starting
-and quietly doing nothing.
-
-### Nix
+## Run
 
 ```sh
-nix run github:rmrfus/clipmunge -- --help
+clipmunge --check     # validate the config
+clipmunge            # run in the foreground
 ```
 
-As a flake input:
+Edits to the config reload automatically. If a reload fails, clipmunge logs
+the error and keeps the previous rules.
 
-```nix
-inputs.clipmunge.url = "github:rmrfus/clipmunge";
-# This flake's own nixpkgs input is the indirect `flake:nixpkgs`. Point it at
-# yours, or the closure grows a second nixpkgs for one 3.2 MB binary.
-inputs.clipmunge.inputs.nixpkgs.follows = "nixpkgs";
-```
-
-The package carries more than the binary: man pages, the example config at
-`share/doc/clipmunge/config.lua.example`, and a systemd user unit whose
-`ExecStart` already points at the store path. `systemd.packages` is what puts
-that unit where the user manager can see it:
-
-```nix
-let clipmunge = inputs.clipmunge.packages.${pkgs.stdenv.hostPlatform.system}.default;
-in {
-  environment.systemPackages = [ clipmunge ];
-  systemd.packages           = [ clipmunge ];
-}
-```
-
-then `systemctl --user enable --now clipmunge`.
-
-There is no home-manager module, and there does not need to be — but "install
-the package and point `xdg.configFile` at a config" leaves out the unit, and
-how the unit gets there has a consequence worth a paragraph:
-
-```nix
-let
-  clipmunge = inputs.clipmunge.packages.${pkgs.stdenv.hostPlatform.system}.default;
-  unit = "${clipmunge}/lib/systemd/user/clipmunge.service";
-in {
-  home.packages = [ clipmunge ];
-  xdg.configFile."clipmunge/config.lua".source = ./clipmunge.lua;
-  xdg.configFile."systemd/user/clipmunge.service".source = unit;
-  xdg.configFile."systemd/user/sway-session.target.wants/clipmunge.service".source = unit;
-}
-```
-
-home-manager also has `systemd.user.packages`, which is the obvious thing to
-reach for. It works, and it never restarts. Everything home-manager generates
-from `systemd.user.services` and its siblings is emitted as `xdg.configFile`
-under `~/.config/systemd/user`, and activation hands `sd-switch` that one
-directory and nothing else. `systemd.user.packages` is the equivalent of
-NixOS's `systemd.packages` and deliberately lands elsewhere:
-`$XDG_DATA_HOME/systemd/user`, which `systemd.unit(5)` describes as "units of
-packages that have been installed in the home directory" and ranks below the
-configuration directory. So the diff covers the half a person declared and not
-the half a package brought: upgrade that way and the daemon you are running is
-still the old store path until you log out. The split is what each option is
-for, so the blind spot is not likely to move.
-
-Linking the unit into the config directory yourself puts it back in the half
-that gets watched. An upgrade then moves the store path in `ExecStart`, which
-is a changed file, which is a restart. The snippet names `lib/systemd/user`
-while `systemd.user.packages` reads `share/systemd/user`; both are the same
-file, because the package installs into `lib` and stdenv's
-`move-systemd-user-units` hook moves the unit to `share`, leaving
-`lib/systemd/user` as a symlink to it.
-
-The last line is the enable symlink, and it names `sway-session.target` rather
-than the `graphical-session.target` the unit's own `[Install]` section asks
-for. home-manager's sway module starts a session target of its own, and hanging
-the daemon off it is what makes it come up with the compositor and go down with
-it. That target exists only while `wayland.windowManager.sway.systemd.enable`
-is set, which it is by default — turn it off, or start sway some other way, and
-the `.wants` symlink names a target nothing ever reaches, so the daemon simply
-never starts and says nothing about why. Use `graphical-session.target.wants`
-in that case.
-
-Editing the config still needs no restart. clipmunge watches the directory it
-was given as well as the directory the config resolves to, and skips the ones
-that cannot change, so `~/.config/clipmunge` is watched while the store path
-behind the symlink is not — and a rebuild swapping that symlink is an event it
-reloads on.
-
-Note that `notify_command` defaults to `notify-send`, which the user manager
-only finds if `libnotify` is on the session PATH — without it a rule that
-notifies logs `No such file or directory` and carries on.
-
-### From a checkout
+To run the installed service in your Wayland session (Nix profile users:
+[link the unit first](docs/install.md#nix-profile)):
 
 ```sh
-git clone https://github.com/rmrfus/clipmunge && cd clipmunge
-make && sudo make install                  # /usr/local
-make && make install PREFIX="$HOME/.local"
-make install DESTDIR="$pkgdir" PREFIX=/usr # for a distribution package
+systemctl --user daemon-reload
+systemctl --user enable --now clipmunge
 ```
 
-This is the path that installs everything: the binary, both man pages, the
-example config under `share/doc/clipmunge`, and the systemd user unit with its
-`ExecStart` already rewritten to wherever `PREFIX` put the binary. `make show
-PREFIX=…` prints every destination without installing anything.
+For session setup and NixOS/Home Manager services, see
+[installation details](docs/install.md).
 
-The unit does not go to `$(PREFIX)/lib/systemd/user`, which would be wrong for
-a home prefix: systemd looks for units installed into a home directory in
-`~/.local/share/systemd/user` and has no `~/.local/lib/systemd/user` on its
-search path at all (`systemd.unit(5)`, Table 2). A system prefix does get
-`lib`, because `/usr/share/systemd/user` is only searched through
-`XDG_DATA_DIRS`, which anybody may repoint.
+Use `clipmunge --debug` to inspect rewrites. **This logs clipboard contents**,
+which may include passwords. Normal payload diagnostics show MIME types and
+sizes, but Lua output and error messages can also contain copied text.
+`man 1 clipmunge` lists all options.
 
-### cargo install
+## Rules and privacy
 
-```sh
-cargo install --git https://github.com/rmrfus/clipmunge
-```
+Only install configs you trust: they can choose a program to run for
+notifications. Lua has restricted libraries and instruction and memory limits;
+see `man 1 clipmunge` for details. `--no-notify` disables notifications.
 
-**This copies the binary and nothing else.** `cargo install` has no mechanism
-for man pages, units or data files, so there are none — and no checkout to
-take them from either, which is what makes the obvious `install -Dm644
-man/man1/…` incantation fail. Use one of the two paths above if you want the
-documentation; see [BACKLOG.md](BACKLOG.md) for the self-install subcommand
-that would close this.
+Selections marked with `x-kde-passwordManagerHint` are skipped before reading.
+Applications do not always supply this hint, and clipmunge cannot otherwise
+recognise passwords. Keep rule patterns specific to the content you want to
+change.
 
-### Configuring it
+## Development
 
-Copy `config.lua.example` to `~/.config/clipmunge/config.lua` and edit it.
-clipmunge does nothing until you do: there is no built-in rule set, and
-without a config it prints the path it looked at and exits. A clipboard daemon
-that starts rewriting things you never asked about is a bad neighbour.
+See [development instructions](docs/development.md), [design notes](DESIGN.md)
+and the [backlog](BACKLOG.md).
 
-Since 0.3.0 every rule needs a `name`: a rule without one fails to load, so
-update an old config before restarting after an upgrade. A running daemon
-survives a bad reload on its old rules, but a restart has nothing to fall
-back to.
-
-## Using it
-
-```sh
-clipmunge                    # watch the clipboard
-clipmunge --check            # load the config, report problems, exit
-clipmunge --debug            # log every rewrite, before and after
-```
-
-`man 1 clipmunge` for the options, `man 5 clipmunge` for the config format.
-
-Editing the config reloads it within about 150 ms — the directory is watched,
-not the file, because editors save by writing a temporary file and renaming it
-over the target. A config that fails to load is reported and the rules that
-already work keep running, so a typo cannot quietly switch your clipboard back
-to plain.
-
-**`--debug` writes clipboard contents to the log**, all of it, including
-whatever a password manager puts there. It is for working on a rule. Without
-it the log records MIME types and byte counts and never content.
-
-## What comes with the example config
-
-- bare ticket identifiers become links, plain text untouched
-- tracking parameters stripped from URLs
-- shopping links reduced to the product identifier
-
-The middle one is the rule everybody wants, so it is a library call rather than
-something to copy around:
-
-```lua
-local clean, dropped = clipmunge.url.strip_params(url)
-if not clean then return nil end   -- nothing to drop, and the loop guard
-```
-
-A handler's first argument is the incoming selection — `_` in the example at
-the top, because most rules want only their capture groups. When a rule does
-want it, it answers `:text()`, `:get(mime)`, `:has(mime)` and `:mimes()`, so a
-rule can read the `text/html` or the source URL that actually arrived instead
-of guessing from the text. It is valid only for the duration of the call.
-
-`clipmunge.url.default_junk` is the built-in list — the `utm_*` family,
-`fbclid`, `gclid`, `msclkid`, `igshid`, `si`, `yclid`, `spm` and neighbours.
-Pass your own table to replace it. Keys match case-insensitively, a trailing
-`*` matches a prefix, a tracker name appearing in a *value* is left alone, and
-the fragment survives.
-
-## Hacking
-
-```sh
-nix develop                                        # or direnv allow
-nix develop --command cargo build --release --locked
-nix develop --command cargo test --locked
-nix develop --command cargo clippy --all-targets --locked -- -D warnings
-```
-
-`git config core.hooksPath hooks` once per clone: the pre-commit hook runs the
-same checks CI does — fmt, clippy, tests, `cargo deny`, `cargo machete` —
-against the *staged* tree inside the dev shell, so a hunk that fails clippy
-cannot sail through because the unstaged fix is still sitting on disk.
-
-
-## Size
-
-3.2 MB, and the number is watched: [DESIGN.md](DESIGN.md) carries the cost of
-every dependency that was weighed, which is how the next one gets argued about.
-`regex` is 917 KB of it with unicode trimmed to what clipboard rules need,
-`clap` 347 KB, and image support would be another 668 KB.
-
-## Status
-
-Early, but tested: 49 tests, and the rule engine's three worst bugs each have
-one named after it. Text and HTML only; the read path is bytes-and-MIME throughout, so
-images are a matter of adding rules rather than rewriting the core, but that
-work has not happened. [DESIGN.md](DESIGN.md) records what was considered and
-rejected and why; [BACKLOG.md](BACKLOG.md) is what is merely not done yet.
-
-## Licence
-
-MIT. See [LICENSE](LICENSE).
+MIT licensed. See [LICENSE](LICENSE).

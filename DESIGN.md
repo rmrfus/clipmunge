@@ -1,140 +1,93 @@
 # Design notes
 
-Decisions that are already made, and the reasoning that produced them. Nothing
-here is a task; anything still to be done lives in [BACKLOG.md](BACKLOG.md) or
-in the issue tracker.
+## Rule engine
 
-The point of the file is the question nobody can answer from the code: *why
-not*. A closed issue is unfindable a year later, and "we considered X and
-rejected it because Y" is exactly what somebody reaching for X needs to read
-first. The measurements are here for the same reason — the next dependency
-argument should start from numbers somebody actually took.
+Lua supports table lookups and custom URL transformations without a separate
+template language. Rules run in declaration order; the first valid replacement
+wins. Rules do not chain.
 
-## Decided against
+The config is trusted because it can set `notify_command`. The interpreter
+excludes `io`, `os`, `debug` and `coroutine`, disables C module loading, and
+sets the default Lua module search path to the config directories. Libraries must be excluded
+at state creation: deleting globals leaves them accessible in `package.loaded`.
+Coroutines are excluded because the instruction hook covers only its thread.
 
-- **Shelling out from *rules*.** Killed the `command = [...]` escape hatch on
-  a rule, and it cost nothing: the URL table it existed to reach just lives in
-  the Lua config now. Handlers stay fast enough that the stale-rewrite race
-  never opens for text.
+Instruction and memory limits constrain accidental runaway code. They do not
+make arbitrary configs safe to install. Notifications run outside Lua, after
+a rewrite is published, with output substituted into arguments without a shell.
 
-  What this does *not* buy is a config you can run unread. `notify_command` is
-  still a program the config names, with rule output as an argument — that is
-  the feature, and the trust boundary is therefore the file, not the
-  interpreter. Said plainly in the README and `clipmunge(1)` rather than
-  implied away.
-- **Rule chaining.** First match wins, in declaration order. Chaining reads
-  well right up until two rules feed each other, and the marker MIME cannot
-  catch a loop that happens inside one pass.
-- **A declarative TOML rule format.** It had already grown `when`, `command`,
-  per-MIME templates and escaping rules before a line was written — a bad
-  programming language in a config file. Lua is a good one.
-- **A `zwlr_data_control_v1` fallback.** The two protocols are identical in
-  shape, so this is cheap — a trait over both, or a macro. It would also be
-  the difference between running and not running on Debian 13 (sway 1.10.1)
-  and Ubuntu 24.04 LTS (sway 1.9), which is not a small audience. Declined
-  anyway: ext-data-control is the standard, those releases are already being
-  superseded, and every protocol carried twice is carried for years. The
-  requirement is stated in the README instead, and the daemon says so on
-  startup rather than failing obscurely.
-- **Trimming `regex` in favour of Lua patterns.** Lua patterns have no
-  alternation and no bounded quantifiers, so `D\d{6,9}` is inexpressible. The
-  crate costs 917 KB with unicode trimmed to `\d`/`\w`/`\s` and case folding,
-  and it cannot backtrack, so a hostile pattern in a third-party rule set
-  cannot hang the daemon.
+## Clipboard handling
 
-## Other MIME types: what a second flavour would cost
+`ext-data-control-v1` lets each MIME type supply different bytes, so plain text
+and HTML can represent the same selection differently. The older
+`wlr-data-control` protocol is not supported to avoid maintaining two backends.
 
-Text and HTML only, for now. The read path is already bytes-and-MIME rather
-than a string, so a new flavour does not need the core rewritten — that seam
-was cut on purpose.
+Selections store bytes by MIME type. Advertised order is fixed: plain text,
+HTML, source URL, URI list, RTF, then other types by name. Some clients choose
+the first supported type; Lua table iteration order is not stable between runs.
 
-Use cases worth having, in order of obviousness:
+The private `application/x-clipmunge` MIME marks our output. Check it before
+reading: reading our own offer would wait for a send event on the blocked
+queue. Offers carrying a configured secret MIME are also skipped before reads.
+The secret hint is optional for source applications and cannot identify all
+passwords.
 
-- strip EXIF/GPS from a copied image, the exact analogue of dropping `utm_*`
-- re-encode a 20 MB PNG screenshot into something pasteable
-- downscale to a maximum long edge
+Before publishing, drain pending events and compare the selection generation
+to discard stale results. Process a selection discovered by that drain before
+sleeping again. Reads have per-flavour and per-selection deadlines. Writes
+stop waiting for pipe capacity at their deadline; this is not a total runtime
+limit if a client keeps accepting data.
 
-Measured costs, on a release build with LTO:
+## URL matching
 
-| addition                                  | binary | delta   |
-| ----------------------------------------- | ------ | ------- |
-| baseline (empty binary)                   | 289 KB | —       |
-| `img-parts` (EXIF surgery, no decode)     | 297 KB | +8 KB   |
-| `image` with png+jpeg+webp, decode+encode | 957 KB | +668 KB |
+Rust regex supports alternation and bounded repetition with linear-time
+matching. Lua patterns lack those operators. Unicode features include
+`\d`, `\w`, `\s` and case folding; script classes are disabled.
 
-Cheaper than `regex`, so no need for a cargo feature. Stripping EXIF is
-essentially free because it walks JPEG APP segments and PNG chunks rather than
-decoding anything, which makes it a reasonable default for everyone.
+`strip_params` edits the query without parsing the rest of the URL. It splits
+off the fragment first to preserve hash routes containing `?`. Parameter names
+are matched without percent-decoding; empty query segments are removed when
+a matching parameter is dropped.
 
-What images break that text does not:
+The default tracker list applies to every domain. Short keys such as `si` or
+`spm` can also be legitimate application parameters. Rules can supply their
+own list and restrict their match to a host. Domain-specific defaults can be
+added if concrete failures justify maintaining them.
 
-- **Size caps must become per-type.** `READ_LIMIT` is one number today. Text
-  wants tens of KB, an image wants tens of MB, and a decoded 4K RGBA buffer is
-  33 MB on its own.
-- **The generation counter is already load-bearing.** Decode, resize and
-  re-encode of a 1920x1080 PNG measured 150 ms. That is long enough to copy
-  something else, and publishing a rewrite of the previous clipboard is worse
-  than doing nothing. It fires today because `drain_events` reads the socket
-  before the check; it used to be dead code, because nothing dispatched
-  between taking the generation and comparing it, so the two could not
-  differ. Anything added to the slow path keeps that drain in front of the
-  publish, and `tick` has to keep skipping its sleep while `got_selection` is
-  set, or the selection the drain picked up waits for an unrelated event.
-- **Pixels stay in Rust.** Lua is policy; `clipmunge.image.*` does the work.
-  Decoding a PNG in a sandboxed interpreter is not a plan.
-- The `image` crate's WebP encoder is **lossless only** — 730 KB against JPEG's
-  96 KB on the same frame. Lossy WebP needs libwebp over FFI and gives up the
-  pure-Rust build.
+## Recorded measurements
 
-## Proving a regression test actually catches its bug
+Historical measurements recorded in the pre-cleanup tree
+[`26f4c58`](https://github.com/rmrfus/clipmunge/tree/26f4c58134a1dffaa94386de904609784f55eebb).
+Sizes retain the original KB units. These are different experiments, not
+additive costs; exact toolchains and image fixtures were not recorded.
 
-49 tests, 28 of them in `config.rs`. The rule engine is reachable without a
-compositor - a `Selection` goes in, a `Rewrite` comes out - which is why
-`Engine::load` is split into "read the file" and `build` from a source string.
+| Measurement | Result | Context |
+| --- | --- | --- |
+| `regex` / `clap` | 917 KB / 347 KB | Reported contributions to clipmunge; regex Unicode features trimmed |
+| `img-parts` | +8 KB (289 → 297 KB) | Empty-binary comparison, release with LTO; metadata edits without decoding |
+| `image` | +668 KB (289 → 957 KB) | Same baseline; PNG, JPEG and WebP decode/encode |
+| `codegen-units = 1` | −191 KB (3402 → 3211 KB) | clipmunge release binary; no build-time or runtime measurement |
+| WebP lossless / JPEG | 730 KB / 96 KB | Encoded output sizes for the same frame |
+| PNG decode, resize, encode | 150 ms | 1920×1080 input |
 
-Three tests are named after bugs this project actually had, and none of them
-was believed until the bug was put back and the test was watched to fail:
+The clap feature comparison recorded 3,211,320 bytes with defaults and
+3,211,000 without `color`: a 320-byte saving, since env_logger still needed
+anstream. Also dropping `suggestions` saved 18,280 bytes against defaults.
+Restoring regex Unicode script classes was recorded as roughly +250 KB.
 
-| test | mutation | what it did |
-| ------------------------------------------------- | ------------------------------- | -------------------------------------- |
-| `require_cannot_resurrect_io_or_os`                | `Lua::new()` for `new_with`     | failed: "io escaped the sandbox"       |
-| `the_advertised_order_is_canonical_not_lua_table_order` | drop `canonical_order()`   | failed, showing the hash order         |
-| `a_runaway_handler_is_skipped_rather_than_hanging` | `MAX_TICKS = u64::MAX`          | hung; libtest reported it past 60s     |
+For new measurements, record the revision, toolchain, features and build
+command alongside the result. Compare equivalent Nix builds as described in
+[development instructions](docs/development.md#dependency-size).
 
-A regression test that has never been seen to fail is a comment with a test
-harness around it. The mutation costs two minutes and is the only thing that
-distinguishes the two.
+## Possible image support
 
-The same discipline applies outside the test suite: `checks.example-config`
-was verified by putting an unbalanced group into `config.lua.example`, and
-`undocumented_unsafe_blocks` by deleting a `// SAFETY:` line.
+The byte-based selection representation can carry images. Current reads cover
+plain and rich text, and rule patterns match only plain text. Image support would need:
 
-## What the secret hint does not cover
+- MIME-based rule matching and reads for image types.
+- Separate compressed and decoded size limits.
+- Rust helpers for EXIF removal, resizing and encoding.
+- Handling for processing delays without publishing stale results.
 
-`secret_mimes` skips a selection whose owner advertises
-`x-kde-passwordManagerHint`. Worth having and nearly free, but it is a
-courtesy protocol and the measurements are not encouraging — on Firefox 154,
-copying from `about:logins` sets the hint; copying out of an
-`<input type=password>` does not, and neither does the 1Password browser
-extension, which is how most people actually put a password on the clipboard.
-
-Nothing better is available. Guessing at content — "this looks like a
-password" — is not a plan: the false positives are silent and the false
-negatives are the ones that matter. The real property is that a rule only
-fires on a match, and the shipped rules want a URL or a bare identifier.
-
-So the honest statement is the one in the README: this is a second line. Do
-not let it grow into a claim that clipmunge knows what a password is.
-
-## Domain-blind tracker list
-
-`strip_params` matches parameter names with no idea what host they sit on, so
-a short entry means what it means everywhere. `si` is Spotify and YouTube;
-`spm` is Alibaba; `ref_src` is a Twitter embed. On a site that uses one of
-those names for something real, the rule quietly drops it.
-
-ClearURLs solves this with per-domain rule sets, which is a data file, a
-matcher and a maintenance burden. Not obviously worth it here: the config is
-Lua, so a rule that cares passes its own list, and the pattern in `match`
-already scopes a rule to a host if written that way. Revisit when somebody
-turns up with a URL the default list breaks.
+Image dependency choices and performance should be measured when this work
+is implemented.

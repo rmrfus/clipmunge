@@ -1,18 +1,10 @@
-# `cargo deny check advisories`. [licenses] is for legal review and stays out;
-# this is a clipboard daemon on one desk.
-#
-# Two defaults are overridden because neither is what anybody actually wants.
+# Run with cargo deny check advisories sources.
 
 [advisories]
-# Upstream default is "warn", which in CI means the build goes green and the
-# line scrolls past. A yanked crate is one the author withdrew - usually
-# because it was broken or unsound - and continuing to ship it is a decision,
-# not an oversight.
+# Fail CI for withdrawn crate versions.
 yanked = "deny"
 
 [sources]
-# Absent by default, which means a dependency pulled from any git URL passes
-# unremarked. Nothing here comes from git; if that changes it should be a
-# conscious edit of this file rather than a silent lockfile entry.
+# Require an explicit exception for new dependency sources.
 unknown-git = "deny"
 unknown-registry = "deny"

@@ -1,22 +1,6 @@
-//! The Lua rule engine.
-//!
-//! The config is Lua rather than a declarative format because the useful rules
-//! are not substitutions. Canonicalising an Amazon link means picking an ASIN
-//! out of a path; mapping a bare identifier to the right tracker means a table
-//! lookup. Expressed as regex-and-template those are write-only; as five lines
-//! of code they are obvious. The one rule everybody wants, dropping tracking
-//! parameters, ships in the library instead - see `urlclean`.
-//!
-//! The config file is trusted, the way a shell rc file is: it can set
-//! `notify_command`, and that runs a program with rule output as an argument.
-//! What the interpreter does *not* get is `io`, `os` or a C loader, so a rule
-//! cannot reach the filesystem, the network or another process at copy time -
-//! only the one thing the config declared up front, in a line you can read.
-//!
-//! Those libraries are never loaded rather than deleted afterwards. Setting a
-//! global to nil looks like removal and is not: `luaL_openlibs` also files
-//! every library under `package.loaded`, which is the first place `require`
-//! looks, so `require("os").execute` walks straight past a nil `os`.
+//! Load Lua configuration and execute clipboard rules.
+//! The config is trusted: it can choose a notification command. Lua library
+//! access and resource use are restricted; see `rule_stdlib` and `sandbox`.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -34,20 +18,12 @@ use crate::clipboard::{Rewrite, Rewriter};
 use crate::selection::{HTML_MIME, SECRET_MIMES, Selection, URL_MIME};
 use crate::urlclean::{DEFAULT_JUNK, strip_params};
 
-/// The hook fires this often; `MAX_TICKS` of them ends the call. Together they
-/// cap one rule at roughly ten million VM instructions, which is tens of
-/// milliseconds of Lua and several thousand times what a real rule uses.
-///
-/// This is not a security boundary - the config is trusted - it is a guard
-/// against your own `while true do end`. Without it that typo does not cost a
-/// logged error, it costs a clipboard that stops working until somebody
-/// notices and kills the daemon.
+/// Check the instruction budget every HOOK_EVERY instructions.
+/// MAX_TICKS allows roughly ten million instructions per call.
 const HOOK_EVERY: u32 = 100_000;
 const MAX_TICKS: u64 = 100;
 
-/// Same idea for `string.rep("x", 2^30)`. The interpreter plus a loaded rule
-/// set is a few hundred KB, so this is room to be wrong in, not a budget to
-/// plan against.
+/// Lua heap limit, including the interpreter and loaded rules.
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 
 /// mlua's error type is neither Send nor Sync, so `?` cannot turn it into an
@@ -64,10 +40,8 @@ impl<T> LuaCtx<T> for mlua::Result<T> {
 
 #[derive(Clone, Copy, PartialEq)]
 enum When {
-    /// Fire whenever the pattern matches.
     Always,
-    /// Only when nobody has attached a rich flavour. A browser copying a link
-    /// already knows the href; our guess should not overwrite it.
+    /// Only match selections with no successfully read rich payloads.
     PlainOnly,
 }
 
@@ -80,17 +54,11 @@ struct Rule {
 
 /// Globals a config may set with `clipmunge.settings {}`.
 pub struct Settings {
-    /// argv, not a shell string. `{}` is replaced by the rule's notify text as
-    /// one whole argument, so a copied `"; rm -rf ~` is just characters. A
-    /// template pasted through a shell would be a command injection with the
-    /// clipboard as its input, which is about the worst possible source.
+    /// Notification argv. Substitute `{}` within each argument without a shell.
     pub notify_command: Vec<String>,
 
-    /// Advertised flavours that make the daemon leave a selection entirely
-    /// alone - not rewritten, not read, and so not logged even under
-    /// `--debug`. Replaced rather than extended by the config, the way
-    /// `clipmunge.url.default_junk` is; an empty list is a deliberate "respect
-    /// nothing" and is allowed.
+    /// Skip offers advertising any of these MIME types before reading.
+    /// Config replaces the default list; an empty list disables this check.
     pub secret_mimes: Vec<String>,
 }
 
@@ -108,26 +76,18 @@ impl Default for Settings {
 
 pub struct Engine {
     lua: Lua,
-    /// Bumped by the instruction hook, zeroed before every call into Lua.
+    /// Bumped by the instruction hook; reset before config execution and each handler.
     ticks: Rc<Cell<u64>>,
     rules: Vec<Rule>,
-    /// The path as the user named it, not the resolved one: a config manager
-    /// swaps the symlink, so resolving has to happen again on every load.
+    /// Unresolved config path, so reloads follow replaced symlinks.
     path: PathBuf,
     settings: Settings,
     notify_enabled: bool,
 }
 
 impl Engine {
-    /// Default config location, honouring XDG.
-    ///
-    /// `XDG_CONFIG_HOME` counts only when it is set, non-empty *and* absolute,
-    /// which is what the basedir spec says and is not pedantry. Taking it
-    /// naively, `XDG_CONFIG_HOME=""` yields `PathBuf::from("").join(...)` - a
-    /// path relative to the working directory. Under systemd that directory is
-    /// whatever `WorkingDirectory` says, so the daemon would look for
-    /// `clipmunge/config.lua` relative to it and refuse to start with a path
-    /// nobody recognises.
+    /// Use absolute XDG_CONFIG_HOME, falling back to $HOME/.config.
+    /// Empty or relative XDG_CONFIG_HOME values are ignored.
     pub fn default_path() -> Option<PathBuf> {
         let base = match std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
             Some(dir) if dir.is_absolute() => dir,
@@ -136,10 +96,7 @@ impl Engine {
         Some(base.join("clipmunge").join("config.lua"))
     }
 
-    /// `path` is the config as the user named it. It is resolved here rather
-    /// than once at startup, because a config manager - home-manager, stow,
-    /// chezmoi - publishes a new file and moves the symlink, so the name is
-    /// the only thing that stays put across a reload.
+    /// Resolve the given path on each load to follow replaced config symlinks.
     pub fn load(path: &Path) -> Result<Self> {
         let resolved = path
             .canonicalize()
@@ -149,13 +106,8 @@ impl Engine {
         Self::build(&source, path, &resolved)
     }
 
-    /// Everything `load` does once the bytes are in hand.
-    ///
-    /// Split out so the rule engine can be tested without a file: the two
-    /// paths differ only in where the source came from, and the parts worth
-    /// testing - the sandbox, rule order, what a handler may return - do not
-    /// touch the filesystem at all. `given` and `resolved` still matter here
-    /// because they become `package.path`.
+    /// Build from source without requiring a file or compositor in tests.
+    /// Both paths determine the Lua module search directories.
     fn build(source: &str, given: &Path, resolved: &Path) -> Result<Self> {
         let lua = Lua::new_with(rule_stdlib(), LuaOptions::default()).lua()?;
         let ticks = Rc::new(Cell::new(0u64));
@@ -222,16 +174,8 @@ impl Rewriter for Engine {
                 continue;
             };
 
-            // The incoming selection first, then the capture groups, group 1
-            // next: a rule that wants the whole match can capture it itself. A
-            // group that did not participate arrives as nil rather than "".
-            //
-            // First rather than last, deliberately. Lua discards a surplus
-            // argument without a word, so appending one would leave every
-            // handler written against the old shape running and quietly wrong
-            // the day its author adds a parameter. Putting it in front makes
-            // every such rule fail on the next copy with the captures visibly
-            // shifted, which is the failure you want.
+            // Captures follow the incoming selection, starting at group 1.
+            // Unmatched optional groups become nil; group 0 is not passed.
             let mut args = Vec::with_capacity(caps.len().saturating_sub(1));
             for group in caps.iter().skip(1) {
                 let value = match group {
@@ -247,8 +191,7 @@ impl Rewriter for Engine {
                 args.push(value);
             }
 
-            // Each rule gets the whole budget; one slow rule must not starve
-            // the next one on the same copy.
+            // Each handler gets its own budget; a slow rule must not exhaust the next one's.
             self.ticks.set(0);
             let called = self.lua.scope(|scope| {
                 let sel = scope.create_userdata_ref(incoming)?;
@@ -278,8 +221,6 @@ impl Rewriter for Engine {
     }
 
     fn is_secret(&self, mimes: &[String]) -> bool {
-        // MIME types are case-insensitive, and the guard must not depend on
-        // every source spelling the hint the same way.
         mimes.iter().any(|m| {
             self.settings
                 .secret_mimes
@@ -292,28 +233,17 @@ impl Rewriter for Engine {
         if !self.notify_enabled {
             return;
         }
-        // A rule can put anything in here, including whatever was on the
-        // clipboard, so cap it before it reaches a notification daemon that
-        // may well keep a history.
+        // Limit notification text, which may contain clipboard data.
         const MAX: usize = 200;
         let text: String = text.chars().take(MAX).collect();
 
         let argv = &self.settings.notify_command;
         let mut cmd = Command::new(&argv[0]);
         for arg in &argv[1..] {
-            // Substitution is per whole argument. No shell is involved, so
-            // quotes and semicolons in the text stay characters.
             cmd.arg(arg.replace("{}", &text));
         }
-        // Fire and forget: a notification daemon that hangs must not take the
-        // clipboard with it, and we never read the child's output.
-        //
-        // Nothing waits on the child, and nothing has to: SIGCHLD is set to
-        // SIG_IGN at startup, so the kernel reaps it. Dropping the `Child`
-        // does not - std says so outright - and a `try_wait` here catches a
-        // process that has not had time to exit yet, which is all of them.
-        // That combination leaves one zombie per notification for the life of
-        // the daemon; measured, twenty spawns gave twenty.
+        // Do not wait for notifications. SIGCHLD = SIG_IGN reaps the children;
+        // dropping Child alone would leave zombies.
         match cmd
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -326,10 +256,9 @@ impl Rewriter for Engine {
     }
 }
 
-/// The libraries a rule set gets. `coroutine` is left out on purpose as well
-/// as the obvious ones: a hook set with `Lua::set_hook` covers the current
-/// thread, and a coroutine is a thread of its own, so a loop inside one would
-/// run past the instruction budget.
+/// Load only the permitted libraries. Clearing globals would leave libraries
+/// accessible through package.loaded. Exclude coroutine because the
+/// instruction hook covers only its own thread.
 fn rule_stdlib() -> StdLib {
     // The base library (print, pairs, pcall, setmetatable, ...) is always
     // loaded by mlua and is not a flag here.
@@ -352,17 +281,13 @@ fn install_limits(lua: &Lua, ticks: &Rc<Cell<u64>>) -> mlua::Result<()> {
             }
         },
     )?;
-    // Absent only when the Lua state is managed externally, which ours is not.
-    // Worth a line rather than a silent pass: without it the cap is a comment.
     if let Err(e) = lua.set_memory_limit(MEMORY_LIMIT) {
         log::warn!("no memory limit on the rule interpreter: {e}");
     }
     Ok(())
 }
 
-/// Everything `clipmunge.settings` understands. An unknown key is almost
-/// always a typo, and silently ignoring it is how a config ends up not doing
-/// what it plainly says.
+/// Supported settings. Unknown keys produce a warning.
 const SETTING_KEYS: &[&str] = &["notify_command", "secret_mimes"];
 
 fn read_settings(tbl: &Table) -> Result<Settings> {
@@ -389,40 +314,27 @@ fn read_settings(tbl: &Table) -> Result<Settings> {
         }
         settings.notify_command = cmd;
     }
-    // No emptiness check, unlike notify_command: `secret_mimes = {}` is a
-    // config saying "honour no such hint", which is a position a person may
-    // hold, and it is visible in the file where somebody can argue with it.
+    // An empty list disables the secret MIME check.
     if let Some(mimes) = tbl.get::<Option<Vec<String>>>("secret_mimes").lua()? {
         settings.secret_mimes = mimes;
     }
     Ok(settings)
 }
 
-/// The incoming selection, as a handler sees it.
-///
-/// Handed in through `Lua::scope`, so it is a borrow rather than a copy - a
-/// selection can be a quarter of a megabyte and cloning one per rewrite to
-/// show it to a rule that will not look would be a poor trade. The scope also
-/// settles the lifetime question structurally: the userdata dies when the call
-/// returns, so a handler that squirrels it away in an upvalue finds it
-/// unusable rather than stale, and mlua refuses writes to it outright.
+/// Read-only selection borrowed through Lua::scope. Access after the handler
+/// returns fails, even if Lua retained the userdata.
 impl UserData for Selection {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        // The same string `match` ran against, for a rule that wants it
-        // without capturing it.
+        // Return the original plain text, without the trimming used for matching.
         methods.add_method("text", |_, sel, ()| Ok(sel.text().map(str::to_owned)));
 
-        // Bytes, as a Lua string. Lua strings are byte strings, so this is
-        // honest for a flavour that is not UTF-8 - which is the point of
-        // handing over `text/rtf` or an image at all.
+        // Lua strings preserve arbitrary bytes, including non-UTF-8 payloads.
         methods.add_method("get", |lua, sel, mime: String| match sel.get(&mime) {
             Some(bytes) => Ok(Value::String(lua.create_string(bytes)?)),
             None => Ok(Value::Nil),
         });
 
-        // Cheaper than `get(m) ~= nil` when the answer is all you want, and
-        // the only way to ask "did this arrive as rich content" without
-        // pulling the bytes across.
+        // Check presence without copying the payload into Lua.
         methods.add_method("has", |_, sel, mime: String| Ok(sel.has(&mime)));
 
         methods.add_method("mimes", |lua, sel, ()| {
@@ -440,8 +352,6 @@ fn build_rule(spec: &Table) -> Result<Rule> {
         .get::<Option<String>>("match")
         .lua()?
         .ok_or_else(|| anyhow!("rule '{name}' has no `match`"))?;
-    // Compiled now, not on first copy: a typo has to fail while you are
-    // looking at the config, not three hours later on the wrong clipboard.
     let pattern = Regex::new(&pattern).with_context(|| format!("rule '{name}': bad pattern"))?;
 
     let when = match spec.get::<Option<String>>("when").lua()?.as_deref() {
@@ -463,14 +373,8 @@ fn build_rule(spec: &Table) -> Result<Rule> {
     })
 }
 
-/// A handler may return a bare string (replace the text) or a table keyed by
-/// MIME type (replace exactly those flavours). Two keys are not MIME types:
-/// "text" is shorthand for the whole text/plain family, and "notify" is a
-/// message for the user rather than for the clipboard.
-///
-/// Note that the rule only *describes* the notification. Sending it is the
-/// daemon's business, which is what keeps a handler a pure function and keeps
-/// the sandbox statement free of exceptions.
+/// Convert a string or MIME-keyed table into a replacement selection.
+/// `text` sets the plain-text family; `notify` is sent separately after publish.
 fn to_rewrite(value: Value) -> Result<Rewrite> {
     let mut sel = Selection::new();
     let mut notify = None;
@@ -498,8 +402,7 @@ fn to_rewrite(value: Value) -> Result<Rewrite> {
         }
         other => bail!("expected a string or a table, got {}", other.type_name()),
     }
-    // A Lua table has no order worth the name; give the flavours one before
-    // they reach the wire. See Selection::canonical_order.
+    // Use stable MIME ordering instead of Lua table iteration order.
     sel.canonical_order();
     Ok(Rewrite {
         selection: sel,
@@ -544,8 +447,6 @@ fn install_api(
         lua.create_function(|_, s: String| Ok(html_escape(&s)))?,
     )?;
 
-    // The common shape, with escaping done for you. Building the table by hand
-    // is allowed, and then the escaping is your problem.
     api.set(
         "link",
         lua.create_function(|lua, (url, text): (String, Option<String>)| {
@@ -565,15 +466,12 @@ fn install_api(
         })?,
     )?;
 
-    // clipmunge.url.*
     let url = lua.create_table()?;
     url.set(
         "strip_params",
         lua.create_function(|lua, (target, list): (String, Option<Vec<String>>)| {
             let patterns =
                 list.unwrap_or_else(|| DEFAULT_JUNK.iter().map(|s| s.to_string()).collect());
-            // nil for "nothing to do", so a rule can hand that straight back
-            // and be idempotent without thinking about it.
             match strip_params(&target, &patterns) {
                 Some((clean, dropped)) => {
                     Ok((Some(clean), Some(lua.create_sequence_from(dropped)?)))
@@ -592,22 +490,17 @@ fn install_api(
     Ok(())
 }
 
-/// Close the doors the base and `package` libraries leave open, and point
-/// `require` at the config's own directory so a rule set can be split across
-/// files.
-///
-/// `io` and `os` are not handled here at all - see `rule_stdlib`, they were
-/// never loaded. What is left to do is the code-loading half of the base
-/// library, and the C loader that comes with `package`.
+/// Disable load/loadfile/dofile, explicit GC and C loaders; set module search paths.
+/// The library allowlist is set separately in `rule_stdlib`.
 fn sandbox(lua: &Lua, given: &Path, resolved: &Path) -> mlua::Result<()> {
     let globals = lua.globals();
-    // Ways to run code that did not come out of the config file.
+    // Remove direct code-loading functions and explicit GC control.
     for name in ["dofile", "loadfile", "load", "collectgarbage"] {
         globals.set(name, Value::Nil)?;
     }
 
     let package: Table = globals.get("package")?;
-    // No C loaders: loadlib would hand a rule the whole libc.
+    // Disable C module loading.
     package.set("cpath", "")?;
     package.set("loadlib", Value::Nil)?;
     package.set("path", require_path(given, resolved))?;
@@ -621,14 +514,9 @@ fn sandbox(lua: &Lua, given: &Path, resolved: &Path) -> mlua::Result<()> {
     Ok(())
 }
 
-/// Both directories the config can be said to live in, because the two layouts
-/// people actually use put the neighbouring files in different places.
-///
-/// Edited in place - a dotfiles repo with a symlink into it - and the siblings
-/// are next to the *resolved* file. Published by a config manager, and
-/// `~/.config/clipmunge` is a real directory of symlinks, so the siblings are
-/// next to the *given* name. Listing both costs a failed `stat` per miss and
-/// removes a class of "works on my laptop" from the tracker.
+/// Search beside both the given and resolved config paths.
+/// Dotfiles repositories keep modules beside the target; config managers
+/// may publish separate module symlinks beside the given path.
 fn require_path(given: &Path, resolved: &Path) -> String {
     let mut dirs: Vec<&Path> = Vec::new();
     for p in [given, resolved] {
@@ -667,19 +555,14 @@ mod tests {
     use super::*;
     use crate::selection::{MARKER_MIME, TEXT_MIMES};
 
-    /// The rule engine needs no file and no compositor: a source string goes
-    /// in, a `Selection` goes past it, a `Rewrite` comes out.
+    /// Build a rule engine from a Lua source string.
     fn engine(source: &str) -> Result<Engine> {
-        // A directory that does not exist is fine and is the point: nothing
-        // here should reach the filesystem, so a `require` would fail loudly
-        // rather than picking up whatever happens to sit next to the tests.
+        // Use a nonexistent directory so tests cannot load local Lua modules.
         let path = Path::new("/nonexistent/clipmunge/config.lua");
         Engine::build(source, path, path)
     }
 
-    /// `Result::expect_err` wants `T: Debug`, and `Engine` has no business
-    /// growing one for a test - it holds a Lua state and the rule set. Drop
-    /// the Ok side first instead.
+    /// Extract the error without requiring Engine to implement Debug.
     fn load_err(source: &str) -> anyhow::Error {
         engine(source)
             .err()
@@ -800,7 +683,7 @@ mod tests {
 
     #[test]
     fn a_table_of_only_notify_is_rejected() {
-        // Nothing would reach the clipboard, so the rule has not done its job.
+        // Notifications describe a published rewrite; without a payload there is none.
         let mut e = engine(
             r#"clipmunge.rule { name = "chatty", match = [[^x$]],
                                 handler = function(_) return { notify = "hi" } end }"#,
@@ -880,10 +763,7 @@ mod tests {
         assert_eq!(text_of(&out), "<script>&\"");
     }
 
-    /// Regression. `require("os")` used to hand back the real library despite
-    /// `os` being nil in _G, because luaL_openlibs also files every library
-    /// under package.loaded and require looks there first. A rule set could
-    /// then run `os.execute`, which the README said was impossible.
+    /// Regression: clearing os/io globals left the libraries in package.loaded.
     #[test]
     fn require_cannot_resurrect_io_or_os() {
         for lib in ["io", "os", "debug"] {
@@ -897,10 +777,7 @@ mod tests {
         }
     }
 
-    /// Regression. A handler returns a Lua table and Lua seeds its string hash
-    /// per process, so `pairs` order changed between daemon starts - six
-    /// starts gave five different advertised orders, and a client that takes
-    /// the first flavour it recognises pasted differently after a restart.
+    /// Regression: Lua table order changed the advertised MIME order between runs.
     #[test]
     fn the_advertised_order_is_canonical_not_lua_table_order() {
         let mut e = engine(
@@ -924,9 +801,7 @@ mod tests {
         );
     }
 
-    /// Regression. Without an instruction budget a `while true do end` in a
-    /// handler parked the daemon for ever; `--check` on such a config had to
-    /// be killed by timeout.
+    /// A runaway handler must yield to the next rule within the instruction budget.
     #[test]
     fn a_runaway_handler_is_skipped_rather_than_hanging() {
         let mut e = engine(
@@ -957,8 +832,7 @@ mod tests {
 
     #[test]
     fn each_rule_gets_the_whole_budget_rather_than_sharing_one() {
-        // Two rules that each burn most of the budget. If the counter were not
-        // reset per call the second would be killed by the first one's spend.
+        // Each handler uses most of its budget, so sharing a counter would fail.
         let mut e = engine(
             r#"
             local function burn()
@@ -1035,9 +909,7 @@ mod tests {
         );
     }
 
-    /// The userdata is handed in through `Lua::scope`, so it must not survive
-    /// the call - a handler that stashes it in an upvalue and reads it on the
-    /// next copy would otherwise be looking at a borrow that is gone.
+    /// A handler must not retain access to borrowed selection data after returning.
     #[test]
     fn the_incoming_selection_does_not_outlive_the_call() {
         let mut e = engine(
@@ -1112,8 +984,6 @@ mod tests {
 
     #[test]
     fn the_secret_hint_matches_regardless_of_case() {
-        // MIME types are case-insensitive; a source spelling the hint
-        // differently must not walk past the guard.
         let e = engine(ECHO).expect("config should load");
         assert!(e.is_secret(&mimes(&["text/plain", "X-KDE-PasswordManagerHint"])));
         assert!(e.is_secret(&mimes(&["text/plain", "X-KDE-PASSWORDMANAGERHINT"])));
@@ -1136,8 +1006,6 @@ mod tests {
 
     #[test]
     fn an_empty_secret_mimes_honours_nothing_and_is_allowed() {
-        // Unlike notify_command, which must not be empty: "respect no hint" is
-        // a position, and one that is visible in the config file.
         let e = engine(
             r#"clipmunge.settings { secret_mimes = {} }
                clipmunge.rule { name = "n", match = [[^x$]],
@@ -1149,7 +1017,6 @@ mod tests {
 
     #[test]
     fn an_unknown_settings_key_is_a_warning_and_not_a_failure() {
-        // Loud in the log, but a typo'd setting must not take the rules down.
         let e = engine(
             r#"clipmunge.settings { notifi_command = { "true" } }
                clipmunge.rule { name = "n", match = [[^x$]],
@@ -1172,16 +1039,11 @@ mod tests {
 
     #[test]
     fn a_rule_without_a_name_fails_the_load() {
-        // The name is what the log lines point at; an unnamed rule would log
-        // as "?" and a typo'd `naem` would sail through. Like `match` and
-        // `handler`, it is required.
         let err =
             load_err(r#"clipmunge.rule { match = [[^x$]], handler = function(_) return "x" end }"#);
         let msg = format!("{err:#}");
         assert!(msg.contains("`name`"), "{msg}");
-        // ...and it says which rule, because the name it complains about is
-        // the thing that is missing. Declaration order is the rule order, so
-        // the number is honest.
+        // Identify the unnamed rule by declaration order.
         assert!(msg.contains("rule #1"), "{msg}");
     }
 }

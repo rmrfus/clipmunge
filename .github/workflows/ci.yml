@@ -4,17 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-  # An advisory published after the last commit is invisible until the next
-  # one. For a daemon that sits on a machine for months, that is the normal
-  # case rather than the edge case.
-  #
-  # Known limit, accepted rather than overlooked: GitHub disables a scheduled
-  # workflow in a public repository after 60 days with no repository activity,
-  # which is the same dormancy this schedule exists to cover. Accepted because
-  # the weeks right after the last commit are when a fresh advisory is most
-  # likely to matter and least likely to be looked for; past 60 quiet days the
-  # crate is not being deployed anywhere new either. workflow_dispatch is here
-  # so the run can be driven from outside the repository if that changes.
+  # Check new advisories weekly. Accepted limit: GitHub disables schedules in
+  # public repos after 60 inactive days; workflow_dispatch allows manual runs.
   schedule:
     - cron: '17 6 * * 1'
   workflow_dispatch:
@@ -24,9 +15,7 @@ permissions:
 
 jobs:
   check:
-    # Everything runs through the flake devshell: mlua compiles Lua 5.4 from C
-    # source, so "pure-Rust crate, use rustup" does not apply, and CI then
-    # builds the way `nix run github:rmrfus/clipmunge` does.
+    # Use the pinned toolchain and C compiler for vendored Lua.
     name: fmt · clippy · test · package
     runs-on: ubuntu-latest
     steps:
@@ -51,53 +40,31 @@ jobs:
           nix develop --command groff -man -Tutf8 -ww -z man/man1/clipmunge.1
           nix develop --command groff -man -Tutf8 -ww -z man/man5/clipmunge.5
 
-      # Both checks named on purpose: they are independent, and
-      # `advisories` alone never reads the [sources] section. Verified by
-      # pointing allow-registry at a nonexistent index - advisories still
-      # said ok, sources failed.
+      # Source restrictions and advisory checks run independently.
       - name: Advisories and sources
         run: nix develop --command cargo deny check advisories sources
 
-      # A dependency nobody calls is not a crash; it keeps turning up in the
-      # advisory scan above and can hold rust-version above what we need.
       - name: Unused dependencies
         run: nix develop --command cargo machete
 
-      # aarch64-linux is in the flake's `systems`, so it is a promise. mlua
-      # builds Lua from C and `c_char` differs in signedness between the two
-      # architectures, which makes a host-only build no evidence at all.
-      # `nix flake check` builds checks.* but only evaluates packages.*, so the
-      # cross build has to hang off `checks` to be verified rather than parsed.
+      # Keep cross-compilation under checks: nix flake check builds checks.*,
+      # but only evaluates packages.*.
       - name: Cross-compile check
         run: nix flake check
 
-      # Not just a local convenience: without this the flake rots quietly and
-      # the breakage lands on whoever first tries `nix run github:...`. It also
-      # runs the suite a second time under buildRustPackage's doCheck, in a
-      # sandbox with no network and no $HOME.
+      # Build and test the packaged application in the Nix sandbox.
       - name: Package
         run: nix build
 
   msrv:
-    # rust-version is otherwise a claim nothing checks: nix gives whatever
-    # nixpkgs pins (1.95 today), so the declared floor stays green locally
-    # whatever it says. The first run of this job caught exactly that - the
-    # manifest claimed 1.85 while mlua-sys wants 1.88.
+    # Check the minimum Rust version independently of the Nix toolchain.
     name: rust-version floor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # v1, not a version branch: the 1.88 branch bakes the toolchain into its
-      # own action.yml, so an action bump would silently change what is
-      # tested. On v1 `toolchain` is an input we own.
-      #
-      # Read the floor out of Cargo.toml rather than repeating it here. A
-      # second copy drifts silently: raise rust-version and the job keeps
-      # passing on the old toolchain - it still exists and still builds - so
-      # it verifies a floor the crate no longer claims. An empty result fails
-      # the next step outright: `toolchain` is a required input with no
-      # default on this ref.
+      # Read the MSRV from the manifest. The pinned v1 action accepts it as an
+      # input, so action updates do not change the toolchain version.
       - name: Read the declared floor
         id: floor
         run: |
@@ -111,7 +78,5 @@ jobs:
           toolchain: ${{ steps.floor.outputs.version }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      # Check, not build: this proves the floor compiles, and the release
-      # artefact comes from the flake job above.
       - name: Check on the declared floor
         run: cargo check --all-targets --locked

@@ -1,142 +1,62 @@
-# clipmunge — conventions
+# clipmunge conventions
 
-A Wayland clipboard daemon: watch the selection over `ext-data-control-v1`,
-run it past Lua rules, put a rewritten one back that can serve different bytes
-for each MIME type. Rust, no C libraries — the wayland backend is the pure
-Rust one and Lua 5.4 is vendored and compiled by the stdenv cc.
+Rust Wayland clipboard daemon with Lua rules. See
+[development instructions](docs/development.md) for commands and layout,
+and [design notes](DESIGN.md) for architecture.
 
-Run them the way CI does, or you get findings CI has not got and miss the ones
-it has. `--locked` everywhere: the lockfile is committed.
+## Checks
 
-- build: `nix develop --command cargo build --release --locked`
-- test: `nix develop --command cargo test --locked`
-- lint: `nix develop --command cargo clippy --all-targets --locked -- -D warnings`
-- fmt: `nix develop --command cargo fmt --all --check`
-- audit: `nix develop --command cargo deny check advisories sources`
-- dead deps: `nix develop --command cargo machete`
-- man lint: `nix develop --command groff -man -Tutf8 -ww -z man/man{1,5}/clipmunge.*`
-- package: `nix build`
+Use the Nix development environment and `--locked` for Cargo build, test and
+clippy commands. Install the staged-tree hook with
+`git config core.hooksPath hooks`. Run checks relevant to the change; lint
+edited man pages with groff and validate edited example configs with `--check`.
+For regression tests, confirm they fail with the bug restored.
 
-Install the hook once per clone: `git config core.hooksPath hooks`.
+## Code
 
-## Layout
+- Return `ExitCode` from `main`; send diagnostics to stderr.
+- No unwrap, expect, panic, unreachable, todo or unimplemented in production
+  code. Clippy permits unwrap, expect and panic in tests.
+- Document each unsafe block with `SAFETY` and keep one unsafe operation per
+  block.
+- Keep dependencies small; measure substantial additions using comparable
+  Nix builds. Preserve measurements and conditions in
+  [DESIGN.md](DESIGN.md#recorded-measurements).
 
-- `clipboard.rs` — the ext-data-control-v1 plumbing and the poll loop.
-- `config.rs` — the Lua engine: sandbox, rule table, the `clipmunge.*` API.
-- `selection.rs` — a selection as bytes-and-MIME, deliberately not a string.
-- `urlclean.rs` — `strip_params` and the default junk list. Pure, and the only
-  part with tests.
-- `watch.rs` — inotify on the config *directory*, with a settle delay.
-- `notify_ready.rs` — the sd_notify half of `Type=notify`, hand-rolled on std
-  because the protocol is one `READY=1` datagram.
-- `main.rs` — arguments, the logger, and the poll loop that ties the six
-  together.
+## Behaviour to preserve
 
-## This crate watches its binary size
+- The config is trusted and can set `notify_command`. Exclude unwanted Lua
+  libraries at state creation; clearing globals leaves `package.loaded`
+  accessible. Keep instruction, memory and I/O limits.
+- Gate payload previews on `--debug`. Lua print output and errors are not
+  redacted; do not promise that every other log line is free of clipboard text.
+- Missing config fails startup. Failed reload keeps the previous rules.
+  Successful reload preserves the runtime notification setting.
+- Resolve the config path on every load to follow replaced symlinks. Honour
+  `XDG_CONFIG_HOME` only when absolute; otherwise use `$HOME/.config`.
+- Check the marker and secret MIME list before reading an offer. Secret MIME
+  matching is case-insensitive; selection `get`/`has` use exact names.
+- Pass the incoming selection first, then capture groups. Its read-only Lua
+  userdata is scoped to the handler call.
+- Publish MIME types in `Selection::canonical_order`, never Lua table order.
+- Drain events before the generation check. Do not sleep in `tick` while
+  `got_selection` is set.
+- Poll reads with deadlines and use non-blocking writes. Explicitly destroy discarded
+  Wayland offers; dropping a proxy does not send its protocol destructor.
+- Send `READY=1` only after all fallible startup steps succeed.
+- Keep `ext-data-control-v1` as the only clipboard backend.
 
-Stated so that `codegen-units = 1` and the dependency arguments in Cargo.toml
-are grounded in something rather than taste. The size table in DESIGN.md is
-how new dependencies get argued about — `regex` costs 917 KB with unicode
-trimmed, `image` would cost 668 KB, `clap` costs 347 KB — and a change that
-moves the binary noticeably is expected to say by how much.
+## Build and docs
 
-Measure with `nix build`, not `cargo build --release`: nixpkgs wraps cargo in
-`cargo-auditable`, so the two are not comparable, and **measure both sides on
-the same tree**. Comparing against a figure from an older commit is how a clap
-trim was once recorded here as making the binary *larger*.
-
-## Non-negotiables
-
-- **The trust boundary is the config FILE, not the interpreter.** The file can
-  name a `notify_command`, so it can run a program; a *rule* cannot. Say it
-  that way round in the docs. The earlier phrasing promised a sandbox the tool
-  does not have, and it took a live exploit to notice.
-- **Unwanted stdlib is never loaded, not deleted.** `Lua::new_with` picks the
-  library set. Setting a global to nil does nothing: `luaL_openlibs` also
-  files each library under `package.loaded`, and `require("os").execute` finds
-  it there. This was a real hole; do not reintroduce it by "just nil-ing" a
-  new global.
-- **Anything that leaves the interpreter is on a budget.** Instruction hook,
-  memory limit, per-flavour read timeout, whole-read budget. A runaway rule is
-  a bug, and a bug must cost a log line, not a dead clipboard.
-- **`--debug` is the only thing that may log clipboard content.** Every other
-  path logs MIME types and byte counts.
-- **The daemon refuses to start without a config.** No built-in rule set. A
-  clipboard daemon that rewrites things nobody asked for is a bad neighbour.
-- **A failed config reload keeps the old rules.** A typo must not silently
-  disarm the clipboard.
-- **The config path is resolved on every load, never cached.** A config
-  manager publishes a new file and moves the symlink; a path resolved once at
-  startup pins the daemon to the version it booted with.
-- **Publish order is `Selection::canonical_order`, never Lua table order.**
-  Lua seeds its string hash per process, so `pairs` order changes between
-  runs, and clients that take the first flavour they recognise then paste
-  something different after a restart.
-- **The secret guard runs on the announced MIME list, before any read.** Not
-  in Lua, and not as a `when` value on a rule: a handler is reached only after
-  the text has been pulled out of the pipe, at which point `--debug` has
-  already put it in the journal. The list is configurable, the decision is
-  not. Its log line says nothing about the content, on purpose. The comparison
-  is case-insensitive by design, while `get`/`has` stay byte-exact: the guard
-  must be generous, reads must be precise. Do not "unify" them.
-- **The incoming selection is the handler's FIRST argument.** Appending it
-  would be silent: Lua drops a surplus argument without complaint, so old
-  rules would run and be quietly wrong. It is handed over through
-  `Lua::scope`, which is what makes it a borrow rather than a quarter-megabyte
-  copy per rewrite and what makes it expire with the call instead of going
-  stale.
-- **`application/x-clipmunge` is the loop guard**, checked against the
-  *advertised* MIME list before anything is read — not after.
-- **Nothing blocks inside an event dispatch.** The pipe a pasting client hands
-  us holds 64 KB and a rewrite may be four times that, so the send path is
-  non-blocking with a deadline. A blocking write there stops the clipboard for
-  as long as the client feels like not reading.
-- **`tick` does not sleep while `got_selection` is set.** `drain_events` can
-  pick a selection up mid-rewrite; going to the socket first would leave it
-  unhandled until some unrelated event arrived. Found by running the race, not
-  by reading the code.
-- **`cargo deny` runs `advisories sources`, both named.** They are independent
-  checks: `advisories` alone never reads the `[sources]` section, so a repo
-  that configures `unknown-git = "deny"` and runs only `advisories` has a
-  setting nothing enforces. Verified by pointing `allow-registry` at a
-  nonexistent index - `advisories` still said ok, `sources` failed.
-- **`rust-version` lives only in Cargo.toml; the MSRV job reads it out of the
-  manifest instead of repeating it.** A second copy in the workflow drifts
-  silently: raise the floor and the job keeps passing on the old toolchain -
-  it still exists and still builds - so it verifies a floor the crate no
-  longer claims, which is the one failure that job exists to prevent. The pin
-  stays `dtolnay/rust-toolchain@<sha> # v1` with the version as an input so
-  dependabot can keep the action current without touching the toolchain - do
-  not pin a version branch instead, that puts the version back in the ref.
-- **The unit is `Type=notify` and something has to send READY=1.** Under
-  `Type=simple` a start "succeeds" for a daemon that is about to exit because
-  no compositor answered. If the startup path grows a step that can fail, it
-  goes *before* `notify_ready::ready()`, not after.
-- **`XDG_CONFIG_HOME` counts only when absolute.** Empty or relative falls back
-  to `$HOME/.config`; taking it naively makes `XDG_CONFIG_HOME=""` a path
-  relative to `WorkingDirectory`, which under systemd is not where anyone put
-  their config.
-- **A regression test is not believed until it has been seen to fail.** Put
-  the bug back, watch it go red, put it back. Two minutes, and it is the only
-  thing separating a regression test from a comment with a harness around it.
-  The three in `config.rs` were each checked this way; see DESIGN.md.
-- **Every wayland object we are handed gets destroyed.** wayland-rs does not
-  send destructors on drop, and `ext-data-control-v1` says the client *must*
-  destroy the offer it replaces. Forgetting one leaks a compositor resource
-  per copy for the whole session.
-- **No `zwlr_data_control_v1` fallback.** Decided in DESIGN.md; every
-  protocol carried twice is carried for years.
-
-## Nix
-
-`flake.nix` has no `buildInputs` and that is load-bearing, not an oversight:
-nothing here links a C library. If a dependency ever needs `pkg-config`, that
-is a fact worth arguing about before it lands.
-
-The package installs the systemd user unit into `lib/systemd/user`, with
-`ExecStart` substituted to the store path. Installing straight into
-`share/systemd/user` would look equivalent and would not be: NixOS
-`systemd.packages` globs `etc/systemd/user` and `lib/systemd/user` only
-(`nixos/lib/systemd-lib.nix`). stdenv's `move-systemd-user-units` hook then
-moves the file to `share/` and leaves `lib/systemd/user` as a symlink, so the
-glob still finds it — install to `lib`, let the hook do the rest.
+- Read the MSRV from `Cargo.toml` in CI; do not duplicate the version in the
+  workflow. Keep the Rust toolchain action on a pinned `v1` revision and pass
+  the version as an input.
+- Run both `cargo deny check advisories sources`; these are independent checks.
+- Lua is vendored C; Wayland uses the Rust backend. Neither needs a separately
+  installed Lua or Wayland library. The build still needs a C compiler.
+- Install Nix user units into `lib/systemd/user` for NixOS discovery; let
+  stdenv relocate them. Substitute the store path into `ExecStart`.
+- Keep README focused on setup and use. Put API details in man pages and
+  implementation rationale beside the relevant code or in DESIGN.md.
+- Comments should explain constraints or non-obvious behaviour. Omit bug-fix
+  narratives, rhetorical comparisons and claims about how well tested code is.

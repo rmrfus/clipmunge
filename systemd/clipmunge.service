@@ -1,59 +1,34 @@
-; Sample user unit. Copy to ~/.config/systemd/user/clipmunge.service, adjust
-; ExecStart, then:
-;
+; Service template. Nix and make install replace ExecStart.
+; For manual installation, set the binary path and copy to
+; ~/.config/systemd/user/clipmunge.service. Create the config, then run:
 ;   systemctl --user daemon-reload
-;   systemctl --user enable --now clipmunge.service
-;
-; Nothing happens until ~/.config/clipmunge/config.lua exists; without it the
-; daemon prints the path it looked at and exits non-zero.
+;   systemctl --user enable --now clipmunge
 
 [Unit]
 Description=Rewrite the Wayland clipboard according to Lua rules
 Documentation=man:clipmunge(1) man:clipmunge(5)
-; graphical-session.target is the portable choice. Some sway setups define
-; their own sway-session.target instead; if yours does, use that in both
-; places, or the unit starts before the compositor exists.
+; Adjust the session target here and in WantedBy if needed.
 PartOf=graphical-session.target
 After=graphical-session.target
-; Refuse to start outside a Wayland session rather than failing obscurely.
+; Require a Wayland session environment.
 ConditionEnvironment=WAYLAND_DISPLAY
 ; StartLimit* belong to [Unit]; systemd ignores them in [Service].
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-; notify, not simple. Under Type=simple systemd calls the unit started the
-; moment the process forks, so `systemctl --user start` returns success for a
-; daemon that is about to exit because there is no compositor, and anything
-; ordered after this unit races the point where rewrites actually begin.
-; clipmunge sends READY=1 once the config has loaded and the data-control
-; protocol has answered.
+; READY=1 is sent after the config loads and the compositor connects.
 Type=notify
-; The daemon is not slow to start, but a compositor that never answers should
-; fail the unit rather than hang the boot ordering behind it.
+; Limit startup wait for an unresponsive compositor.
 TimeoutStartSec=30
-; cargo install puts it in ~/.cargo/bin, which is not on the user manager's
-; PATH; a distribution package puts it in /usr/bin. Pick one. The nix package
-; rewrites this line to its own store path and ships the result inside the
-; package, so on NixOS take that unit (systemd.packages) rather than this
-; file. `make install` rewrites it too, to $(BINDIR)/clipmunge. This file is
-; the template; both installers substitute, and nobody should have to edit it
-; by hand.
+; Installers replace this path; cargo install uses ~/.cargo/bin/clipmunge.
 ExecStart=%h/.local/bin/clipmunge
 
-; A missing or broken config is a mistake to fix, not something to retry
-; forever. Restart=on-failure with the [Unit] start limit above means a
-; genuinely dead daemon stops and says so instead of spinning.
+; Limit repeated failures with StartLimitBurst above.
 Restart=on-failure
 RestartSec=3
 
-; The point of clipmunge is that rules cannot reach anything. The daemon
-; itself needs very little either: the config directory, the Wayland socket,
-; and whichever program notify_command names. Verified with these in place -
-; rewrites work and notify_command still spawns, seccomp filter and all.
-;
-; Note PrivateTmp: a config under /tmp is invisible to the service, because it
-; gets a /tmp of its own. Keep the config in ~/.config where it belongs.
+; PrivateTmp hides the session /tmp; keep config files outside it.
 NoNewPrivileges=yes
 UMask=0077
 PrivateTmp=yes

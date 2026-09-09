@@ -1,354 +1,271 @@
-.TH CLIPMUNGE 5 "2026-09-04" "clipmunge" "File Formats"
+.TH CLIPMUNGE 5 "2026-09-09" "clipmunge" "File Formats"
 .SH NAME
-clipmunge \- configuration file for clipmunge(1)
+clipmunge \- Lua configuration for clipmunge(1)
 .SH SYNOPSIS
 .I $XDG_CONFIG_HOME/clipmunge/config.lua
 .PP
-.RI ( ~/.config/clipmunge/config.lua
-when
-.B XDG_CONFIG_HOME
-is unset.)
+Defaults to
+.I ~/.config/clipmunge/config.lua
+when XDG_CONFIG_HOME is unset, empty or relative.
 .SH DESCRIPTION
-The file is Lua. Loading it is what defines the rules: the config calls
+The config calls
 .B clipmunge.rule
-once per rule, in the order the rules should be tried.
+once per rule. Rules run in declaration order against the incoming plain text.
+The first valid replacement wins; rules do not chain.
+A missing config file is an error.
 .PP
-Lua rather than a declarative format because the rules that are worth having
-are not substitutions. Canonicalising a shopping link means picking an
-identifier out of a path; deciding which of several trackers a bare identifier
-belongs to means a table lookup. As regular expressions with templates those
-are write\-only; as five lines of code they are obvious. The one rule common
-enough to be everybody's, dropping tracking parameters, is in the library
-already \- see
-.BR clipmunge.url.strip_params .
-.PP
-A missing file is an error, not an empty rule set.
-.PP
-The file is trusted: it can set
-.B notify_command
-and thereby run a program. Its
-.I rules
-are not trusted in the same way \- the interpreter never loads
-.BR io ,
-.B os
-or the C loader, so a handler cannot touch the filesystem, the network or
-another process, and it runs on an instruction and memory budget. See the
-SECURITY section of
+Only install trusted configs: they can choose the program used for
+notifications. See SECURITY in
 .BR clipmunge (1).
 .SH RULES
 .B clipmunge.rule
-takes one table:
+takes a table:
 .PP
 .RS 4
 .EX
 clipmunge.rule {
   name = "tickets",
-  match = [[^([A-Z]+)-(\\d+)$]],
+  match = [[^([A-Z]+)-(\ed+)$]],
   when = "plain-only",
   handler = function(_, kind, number)
-    return clipmunge.link("https://tracker/" .. kind .. number)
+    local id = kind .. "-" .. number
+    return clipmunge.link("https://tracker.example.com/" .. id, id)
   end,
 }
 .EE
 .RE
 .TP
 .B name
-Used in log messages. Required: a rule without one fails to load, so a typo'd
-key cannot silently leave it anonymous.
+Required string identifying the rule in diagnostics.
 .TP
 .B match
-A regular expression, applied to the selection's plain text after leading and
-trailing whitespace is trimmed. Required.
+Required regular expression, applied to plain text with leading and trailing
+whitespace trimmed. Empty or unreadable plain text is skipped.
 .IP
-This is a real regular expression \- the Rust
-.B regex
-crate \- and not a Lua pattern. Alternation and bounded repetition such as
-.B \\ed{6,9}
-work. Lookaround and backreferences do not exist, which is the price of
-matching in time linear in the input; the same property means a pattern from
-somebody else's rule set cannot hang the daemon.
+Uses Rust regex syntax. Alternation and bounded repetition such as
+.B \ed{6,9}
+are supported; lookaround and backreferences are not.
+Unicode support includes
+.BR \ed ,
+.BR \ew ,
+.B \es
+and case folding. Script classes such as
+.B \ep{Greek}
+are unavailable. Patterns are compiled when the config loads.
 .IP
-Unicode support is trimmed to what clipboard rules need:
-.BR \\ed ,
-.BR \\ew ,
-.B \\es
-and case folding.
-.B \\ep{Greek}
-and the rest of the script classes are not compiled in \- a pattern using one
-fails to load rather than quietly not matching. Restoring them would cost
-about 250 KB of binary.
-.IP
-Patterns are compiled when the config loads, so mistakes surface at start\-up
-and on reload rather than on a later copy.
-.IP
-Beware that Lua's own
+Lua's
 .B string.match
-is still available inside handlers and takes Lua patterns, which look similar
-and are not the same language.
+uses Lua patterns, which have different syntax.
 .TP
 .B when
 .B "always"
-(the default) or
+(default), or
 .BR "plain-only" .
-With
-.BR plain-only ,
-the rule is skipped when the selection already carries a rich flavour such as
-.BR text/html .
-A browser copying a link already knows the correct href, and a guess should
-not overwrite it. Rules that clean URLs generally want the default, because
-cruft arrives from the browser in the first place.
+The latter skips selections with successfully read payloads of
+.BR text/html ,
+.BR chromium/x-source-url ,
+.B text/uri-list
+or
+.BR text/rtf .
 .TP
 .B handler
-A function receiving the incoming selection, then the capture groups of
-.B match
-with group 1 first. A group that did not participate arrives as
+Required function. Receives the incoming selection, then capture groups
+starting at group 1. An unmatched optional group is
 .BR nil .
-Required.
-.IP
-Most rules want only their captures and write the first parameter as
-.BR _ .
-It is first rather than last on purpose: Lua discards a surplus argument
-without a word, so a handler written for an older shape would keep running and
-go quietly wrong the day somebody added a parameter to it. In front, such a
-rule fails on the next copy with its captures visibly shifted.
-.SS The incoming selection
-The first argument answers four methods and nothing else. It cannot be written
-to, and it is valid only while the handler runs \- a rule that stashes it in an
-upvalue and reads it on a later copy gets an error, not stale bytes.
+Use
+.B _
+for the first argument if the handler only needs captures.
+.SS Incoming selection
+Read-only userdata, valid for the duration of the handler call.
+Accessing a retained reference after the call fails.
 .TP
-.BI incoming:text()
-The plain text, the same string
-.B match
-was applied to, or
-.B nil
-if the selection carried no readable text.
+.B incoming:text()
+The original plain text as UTF-8, without the trimming used for matching.
+The first present payload in the text/plain family is used; if it is invalid
+UTF-8, the selection is not passed to rules.
 .TP
 .BI incoming:get( mime )
-The bytes of one flavour as a Lua string, or
+The payload as a Lua byte string, or
 .B nil
-if it did not arrive. Lua strings are byte strings, so a flavour that is not
-UTF\-8 survives the trip intact.
+if unavailable. Non-UTF-8 bytes are preserved. MIME names match exactly.
 .TP
 .BI incoming:has( mime )
-Whether the flavour arrived, without copying its bytes.
+Whether a payload is present, without copying it. MIME names match exactly.
 .TP
-.BI incoming:mimes()
-The flavours that arrived, as a list.
-.IP
-Only the flavours clipmunge reads are there: the
-.B text/plain
-family,
+.B incoming:mimes()
+List of available MIME types.
+.PP
+The text/plain family, in preference order, is
+.BR text/plain;charset=utf-8 ,
+.BR text/plain ,
+.BR UTF8_STRING ,
+.B STRING
+and
+.BR TEXT .
+The daemon also reads
 .BR text/html ,
 .BR chromium/x-source-url ,
 .B text/uri-list
 and
 .BR text/rtf .
-Anything else a source advertises is skipped unread, because no rule could
-look at it and a pipe round trip per flavour is not free.
-.IP
-A rule that reads a rich flavour and writes one back has the same idempotency
-problem as a rule that rewrites URLs, and the same answer: return
-.B nil
-when there is nothing left to change. The marker flavour catches the daemon
-seeing its own work; it cannot catch a rule feeding itself inside one pass.
+Other advertised types are skipped. Reads are limited to 256 KiB per flavour,
+500 ms per flavour and one second per selection; failed or oversized reads
+may leave a flavour unavailable. Such a flavour is also absent from
+.BR incoming:has() ,
+.B incoming:mimes()
+and the
+.B plain-only
+check.
 .SH HANDLER RESULTS
-A handler returns one of:
 .TP
 .B nil
-Decline. The next rule is tried; if none matches, the clipboard is untouched.
+Decline and try the next rule. If no rule produces a replacement, leave the
+clipboard unchanged.
 .TP
 a string
-Replace the plain text with it. Other flavours are dropped.
+Replace plain text and drop other flavours.
 .TP
 a table
-Each key is a MIME type and each value is the bytes for it, with two
-exceptions.
+Map MIME names to payload strings.
 .B text
-sets the whole text/plain family at once, and
+is shorthand for the plain-text family;
 .B notify
-is a message for the user rather than for the clipboard.
+contains an optional notification message.
+An empty table or one containing only a notification is invalid.
+Plain text and notifications must be valid UTF-8; other MIME payloads may
+contain arbitrary bytes. Avoid combining
+.B text
+with explicit text/plain-family keys, since their overwrite order is unspecified.
 .PP
-Only what the table lists is published. Nothing is inherited from the incoming
-selection, deliberately: cleaning a URL in
-.B text/plain
-while passing an untouched
-.B text/html
-through would put the original tracking link back the moment somebody pasted
-into a rich editor.
+Only the returned flavours are published; incoming flavours are not inherited.
+Escape any HTML assembled by hand with
+.BR clipmunge.html_escape .
 .PP
-The first rule to return something other than
-.B nil
-wins. Rules do not chain; two rules that fed each other would loop, and the
-loop guard cannot see inside a single pass.
+Handler errors and invalid results are logged, then the next rule is tried.
+A notification is sent only after the replacement reaches the clipboard.
 .SH LIBRARY
 .TP
-.BI clipmunge.link( url [, text ])
-Builds the common shape: plain text, an
-.B <a href>
-for
-.BR text/html ,
-and
+.BI clipmunge.link( url "[, " text ])
+Return a table containing plain text, an escaped HTML link and
 .BR chromium/x-source-url .
-\fItext\fR defaults to \fIurl\fR. Escaping is handled here.
+\fItext\fR defaults to \fIurl\fR.
 .TP
 .BI clipmunge.html_escape( s )
-For tables assembled by hand.
+Escape text for use in HTML text or quoted attribute values.
 .TP
 .BI clipmunge.url.strip_params( url "[, " patterns ])
-Removes tracking parameters from \fIurl\fR. Returns the cleaned URL and a
-list of the keys that were dropped, or
+Return a cleaned URL and the list of removed parameter names, or
 .B nil
-when nothing matched.
+if nothing matched.
 .IP
-That
-.B nil
-matters as much as the cleaning does. A rule that rewrites URLs is handed its
-own output on the next round, so answering \(lqno change\(rq for an already
-clean URL is what keeps it from looping.
-.IP
-Keys are matched case\-insensitively and a trailing
+Parameter names match case-insensitively. A trailing
 .B *
 matches a prefix, so
 .B utm_*
-covers the whole family. Only parameter names are considered; a tracker name
-appearing in a
-.I value
-is left alone. The fragment survives, and the
+covers all names with that prefix. Names are not percent-decoded.
+Retained parameters keep their bytes and order; fragments are preserved.
+Empty query segments are discarded when a parameter is removed.
+If all parameters are removed, the
 .B ?
-disappears entirely when nothing is left before it.
+is removed too.
 .IP
-\fIpatterns\fR replaces the built\-in list rather than adding to it. To
-extend the default, start from
-.BR clipmunge.url.default_junk .
+\fIpatterns\fR replaces the default list. To extend it, copy
+.B clipmunge.url.default_junk
+and append entries, then pass that table explicitly. Editing
+.B clipmunge.url.default_junk
+alone does not change the defaults used by calls without a second argument.
 .TP
 .B clipmunge.url.default_junk
-The built\-in list, as a table: the
-.B utm_*
-family,
+The default parameter patterns as a Lua table, including
+.BR utm_* ,
 .BR fbclid ,
 .BR gclid ,
 .BR msclkid ,
 .BR igshid ,
 .BR si ,
-.BR yclid ,
-.B spm
-and their neighbours.
-.PP
-Escaping belongs to whoever builds the markup. Once a handler has returned
-bytes, the daemon cannot tell data from tags, so a table you build yourself is
-yours to escape \- otherwise clipboard content ends up injected into the
-markup somebody pastes.
+.BR yclid
+and
+.BR spm .
+Patterns apply to every domain and may remove legitimate parameters on some
+sites. Use a custom list or restrict the rule's URL pattern when needed.
 .SH SETTINGS
 .B clipmunge.settings
-takes a table of globals. An unrecognised key is a warning at load time, not a
-silent no\-op: a config that reads as if it sets something has to either set
-it or say why not.
+takes a table. Calls during config execution merge settings by key; the final
+values are read after the config finishes. Calls from handlers do not change
+active settings. Unknown keys produce a warning at load time.
 .TP
 .B notify_command
-The argument list used to send notifications, default
-.BR "{ \(dqnotify-send\(dq, \(dq-a\(dq, \(dqclipmunge\(dq, \(dqclipmunge\(dq, \(dq{}\(dq }" .
-The element
+Non-empty argument list for notifications. Default:
+.PP
+.RS
+.EX
+{ "notify-send", "-a", "clipmunge", "clipmunge", "{}" }
+.EE
+.RE
+.IP
+Each occurrence of
 .B {}
-is replaced, whole, by the rule's
-.B notify
-text.
-.IP
-It is a list, not a command line, and no shell is involved. Clipboard content
-is the least trustworthy input there is, and substituting it into a shell
-string would be a command injection with the internet as its source.
-.IP
-This setting is the one place a config reaches outside the process, and it is
-deliberate. It is also the reason to read a rule set before installing it: a
-handler cannot start a process, but the file it came in can name one here.
-.IP
-Nothing is sent unless a rule asks for it, so a config with no
-.B notify
-in any handler is silent regardless of this setting.
+in arguments after the executable name is replaced with the handler's
+notification text. The executable name itself is not substituted.
+Arguments are passed without a shell. No command runs unless a handler
+returns a notification and notifications are enabled.
 .TP
 .B secret_mimes
-Advertised flavours whose presence makes clipmunge leave a selection alone
-entirely \- not rewritten, not read, and therefore not logged even under
+MIME names that cause an offer to be skipped before any content is read.
+Default:
+.PP
+.RS
+.EX
+{ "x-kde-passwordManagerHint" }
+.EE
+.RE
+.IP
+The list replaces the defaults. An empty table disables this check.
+Names match case-insensitively; only their presence is checked, not their values.
+This also prevents content diagnostics under
 .BR \-\-debug .
-Default
-.BR "{ \(dqx-kde-passwordManagerHint\(dq }" .
-.IP
-The list replaces the built\-in one rather than extending it, the same way
-.B clipmunge.url.strip_params
-takes a replacement list. An empty table is allowed and means \(lqhonour no
-such hint\(rq; that is a position somebody may hold, and this is where it is
-visible.
-.IP
-Only the flavour's presence is checked, never its value. Fetching a six\-byte
-hint would cost a pipe round trip with a source that may never answer, and a
-source that advertised the hint has already said what it means.
-.IP
-.B This is partial and depends entirely on the other application.
-The hint is opt\-in for whoever owns the selection, and most owners do not opt
-in. Measured on Firefox 154: copying from
-.B about:logins
-sets it; copying out of an
-.B <input type=password>
-does not, and neither does the 1Password browser extension. What actually
-keeps a password out of a rewrite is that no rule matches it \- see LOOPS and
-the note on catch\-all patterns.
+Applications may omit the hint; it does not cover all passwords.
 .SH EXAMPLE
 .RS 4
 .EX
-clipmunge.settings {
-  notify_command = { "notify-send", "-a", "clipmunge", "clipmunge", "{}" },
-}
-
 clipmunge.rule {
   name = "detrack",
-  match = [[^(https?://\\S+)$]],
+  match = [[^(https?://\eS+)$]],
   handler = function(_, url)
     local clean, dropped = clipmunge.url.strip_params(url)
-    -- nil means nothing matched, which is also what stops this rule from
-    -- rewriting its own output for ever.
     if not clean then return nil end
-    local out = clipmunge.link(clean, clean)
+    local out = clipmunge.link(clean)
     out.notify = "Dropped " .. table.concat(dropped, ", ")
     return out
   end,
 }
 .EE
 .RE
-.SH CATCH-ALL PATTERNS
-A pattern such as
-.B ^(.*)$
-matches everything you ever copy, passwords included, and hands it to a
-handler. That is a supported thing to write and occasionally the right one,
-but it is the only way an ordinary rule set can end up rewriting a secret: the
-shipped rules match a URL or a bare identifier and a password is neither.
+.SH MATCHING AND REPEATED COPIES
+Use specific patterns. A catch-all such as
+.B (?s)^(.+)$
+can match any nonempty plain text, including secrets whose source omits the hint.
+Passwords can also match more specific patterns.
 .PP
-.B secret_mimes
-above helps when the source marks its content, which is uncommon. It is a
-second line, not the first one.
-.SH LOOPS
-Every selection clipmunge publishes carries a private
+Published selections carry
 .B application/x-clipmunge
-flavour, and a selection carrying it is ignored. That handles the daemon
-seeing its own work.
-.PP
-It does not handle a rule whose output matches its own pattern, because that
-happens within one pass. A rule that rewrites URLs has to be idempotent, and
-the usual way is to return
+and are ignored by the daemon. Rules are not reapplied within a pass.
+If another application copies the result without preserving that marker,
+rules can see it again. Return
 .B nil
-when there is nothing left to change, as the example does.
+when there is nothing to change to avoid unnecessary rewrites and notifications.
 .SH SPLITTING THE CONFIG
 .B require
-works and searches the config directory, so a large rule set can live in
-several files next to
-.IR config.lua .
-Changes to any of them trigger a reload, since the whole directory is watched.
-C modules cannot be loaded.
+initially searches beside the config. For a symlinked config, it searches
+both the given and resolved directories, using
+.B ?.lua
+and
+.BR ?/init.lua .
+C modules are disabled.
 .PP
-When the config is a symlink, both directories are searched: the one holding
-the name and the one holding the target. A dotfiles repository keeps the
-neighbouring modules beside the real file; a config manager publishes each of
-them as its own symlink in
-.IR ~/.config/clipmunge ,
-so the siblings are beside the name instead. Searching both means the same
-rule set works either way.
+Changes directly in the watched directories trigger reloads. Subdirectories
+are not watched recursively, and the watched directories are fixed at startup.
+See RELOADING in
+.BR clipmunge (1).
 .SH SEE ALSO
 .BR clipmunge (1)

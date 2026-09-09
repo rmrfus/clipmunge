@@ -1,15 +1,9 @@
-//! Dropping tracking parameters out of a URL.
-//!
-//! String surgery rather than a URL parser. Everything this needs is the
-//! query, meaning whatever sits after the first `?` that comes before the
-//! first `#`; pulling in a full parser to find that would cost more than the
-//! rest of the program. The order in that sentence is load-bearing, see
-//! `strip_params`.
+//! Remove query parameters while preserving the URL prefix and fragment.
 
 /// Parameters worth dropping by default, matched case-insensitively. A
 /// trailing `*` matches a prefix.
 pub const DEFAULT_JUNK: &[&str] = &[
-    "utm_*",     // the whole Urchin family, still going
+    "utm_*",     // UTM tracking parameters
     "fbclid",    // Facebook
     "gclid",     // Google Ads
     "dclid",     // DoubleClick
@@ -43,17 +37,11 @@ fn is_junk(key: &str, patterns: &[String]) -> bool {
     })
 }
 
-/// Returns the cleaned URL and the keys that were removed.
-///
-/// `None` when nothing matched. That is not just an optimisation: a rule that
-/// rewrites URLs is fed its own output on the next round, so returning "no
-/// change" for an already clean URL is what stops it looping.
+/// Return the cleaned URL and removed keys, or `None` if nothing matched.
+/// Keys are matched as encoded bytes; empty query segments are omitted on rewrite.
 pub fn strip_params(url: &str, patterns: &[String]) -> Option<(String, Vec<String>)> {
-    // The fragment comes off first, and only then the query. Splitting on `?`
-    // straight away finds the wrong one in `https://app/#/board?si=1`, where
-    // the `?` is inside a hash route and the query does not exist at all -
-    // rewriting that mangles somebody's SPA link to strip a parameter no
-    // server will ever see.
+    // Split the fragment first: in `https://app/#/board?si=1`, the `?`
+    // belongs to a hash route, not the query.
     let (before_hash, fragment) = match url.split_once('#') {
         Some((b, f)) => (b, Some(f)),
         None => (url, None),
@@ -185,7 +173,7 @@ mod tests {
 
     #[test]
     fn cleaning_twice_changes_nothing_the_second_time() {
-        // The loop guard for any rule built on this.
+        // An already cleaned URL should not trigger another rewrite.
         let once = clean("https://e.com/a?utm_source=x&id=1").unwrap();
         assert_eq!(clean(&once), None);
     }
