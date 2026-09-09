@@ -1,5 +1,9 @@
 # clipmunge
 
+[![CI](https://github.com/rmrfus/clipmunge/actions/workflows/ci.yml/badge.svg)](https://github.com/rmrfus/clipmunge/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/rmrfus/clipmunge?logo=github)](https://github.com/rmrfus/clipmunge/releases/latest)
+[![License](https://img.shields.io/github/license/rmrfus/clipmunge)](LICENSE)
+
 Rewrites the Wayland clipboard as you copy, according to rules you write in
 Lua. Copy a bare ticket number and paste a link; copy a URL out of a phone app
 and paste it without the tracking.
